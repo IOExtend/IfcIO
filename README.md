@@ -121,6 +121,10 @@ foreach (var wall in step.OfType("IFCWALL"))
 
 ---
 
-## License
+## License and trademarks
 
-MIT &copy; 2026 [IOExtend](https://github.com/IOExtend)
+IfcIO is licensed under the [MIT License](LICENSE). Copyright &copy; 2026 [IOExtend](https://github.com/IOExtend).
+
+buildingSMART and IFC are registered trademarks of buildingSMART International Ltd.
+
+IfcIO is an independent implementation of the ISO 10303-21 STEP and buildingSMART specifications. No proprietary code or binaries are included.

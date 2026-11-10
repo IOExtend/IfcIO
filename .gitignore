@@ -8,3 +8,5 @@ obj/
 artifacts/
 TestResults/
 *.log
+__pycache__/
+*.pyc

@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    name: build (windows-latest)
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: |
+          8.0.x
+          10.0.x
+
+    - name: Restore dependencies
+      run: dotnet restore IfcIO.slnx
+
+    - name: Build
+      run: dotnet build IfcIO.slnx -c Release --no-restore /warnaserror
+
+    - name: Test
+      run: dotnet test IfcIO.slnx -c Release --no-build --verbosity normal
+
+    - name: Pack NuGet Packages
+      run: dotnet pack IfcIO.slnx -c Release --no-build -o artifacts
+
+    - name: Upload Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: nuget-packages
+        path: artifacts/*.nupkg
+        if-no-files-found: error
+
+  build-linux:
+    name: build (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: |
+          8.0.x
+          10.0.x
+
+    - name: Build on Linux
+      run: dotnet build src/IfcIO/IfcIO.csproj -c Release /warnaserror

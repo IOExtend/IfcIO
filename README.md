@@ -146,6 +146,30 @@ paramWall.QuantitySets.Add(StandardQtoSets.WallBaseQuantities(
     grossVolume: 5.4,
     netVolume: 4.8));
 
+// Add architectural space (room) with space boundary
+var office = model.AddSpace(
+    name: "Office 101",
+    spaceNumber: "101",
+    longName: "Open Plan Office",
+    grossFloorArea: 45.0,
+    height: 3.0,
+    storey: floor1);
+
+office.Boundaries.Add(new IfcSpaceBoundary
+{
+    Name = "Wall Boundary",
+    PhysicalOrVirtual = IfcPhysicalOrVirtual.Physical,
+    InternalOrExternal = IfcInternalOrExternal.Internal,
+    RelatedBuildingElement = paramWall,
+});
+
+// Group elements into HVAC system
+var hvac = model.AddSystem("Supply Air AHU-01", isDistribution: true);
+hvac.Elements.Add(paramWall);
+
+// Validate model and export detected issues as buildingSMART BCF 2.1 archive
+model.ExportValidationBcf("Building_Issues.bcfzip");
+
 // Validate model integrity
 var validation = model.Validate();
 if (!validation.IsValid)
@@ -191,8 +215,8 @@ dotnet tool install --global IfcIO.Cli
 ### CLI Commands
 
 ```sh
-# Inspect model metadata, storeys, and element distribution
-ifcio info Building.ifc --report
+# Inspect model metadata, storeys, spaces, systems, and element distribution
+ifcio info Building.ifc --report --spaces --systems
 
 # Convert IFC to binary glTF 2.0 and Wavefront OBJ
 ifcio export Building.ifc --glb scene.glb --obj scene.obj
@@ -203,8 +227,8 @@ ifcio pack Building.ifc -o Building.ifczip
 # Extract IFC from .ifczip
 ifcio unpack Building.ifczip -o Building.ifc
 
-# Validate ISO 10303-21 structure and schema
-ifcio validate Building.ifc
+# Validate ISO 10303-21 structure and export BCF 2.1 issues for coordination
+ifcio validate Building.ifc --bcf Issues.bcfzip
 ```
 
 ---

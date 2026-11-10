@@ -18,7 +18,8 @@ public static class Program
 
         if (args[0] is "-v" or "--version" or "version")
         {
-            Console.WriteLine($"IfcIO.Cli v0.2.0 (.NET {Environment.Version})");
+            var version = typeof(Program).Assembly.GetName().Version?.ToString(3) ?? "0.5.0";
+            Console.WriteLine($"IfcIO.Cli v{version} (.NET {Environment.Version})");
             return 0;
         }
 
@@ -65,14 +66,18 @@ Options:
   --obj <path>          Output Wavefront OBJ file (.obj)
   --ifc <path>          Output IFC STEP physical file (.ifc)
   --ifczip <path>       Output compressed IFC archive (.ifczip)
+  --bcf <path>          Export validation issues to buildingSMART BCF 2.1 zip archive (.bcfzip)
   --schema <ifc2x3|ifc4> Target schema for IFC export
+  --spaces              Display architectural spaces, rooms, and boundaries
+  --systems             Display MEP systems and grouped elements
   --report              Display detailed category and storey breakdown in info command
   -h, --help            Show this help message
   -v, --version         Show tool version
 
 Examples:
-  ifcio info Building.ifc --report
+  ifcio info Building.ifc --report --spaces --systems
   ifcio export Building.ifc --glb scene.glb
+  ifcio validate Building.ifc --bcf issues.bcfzip
   ifcio pack Building.ifc -o Building.ifczip
 ");
     }
@@ -105,6 +110,8 @@ Examples:
         }
 
         bool detailedReport = args.Contains("--report", StringComparer.OrdinalIgnoreCase);
+        bool showSpaces = args.Contains("--spaces", StringComparer.OrdinalIgnoreCase);
+        bool showSystems = args.Contains("--systems", StringComparer.OrdinalIgnoreCase);
 
         var sw = Stopwatch.StartNew();
         var model = IfcModel.Open(inputPath);
@@ -145,6 +152,9 @@ Examples:
         Console.WriteLine($"  Building Name:     {model.BuildingName}");
         Console.WriteLine($"  Storeys:           {model.Storeys.Count}");
         Console.WriteLine($"  Total Elements:    {elementCount:N0}");
+        Console.WriteLine($"  Spaces:            {model.AllSpaces.Count():N0}");
+        Console.WriteLine($"  Systems:           {model.Systems.Count}");
+        Console.WriteLine($"  Groups:            {model.Groups.Count}");
         Console.WriteLine($"  Meshes:            {meshCount:N0}");
         Console.WriteLine($"  Triangles:         {triCount:N0}");
         Console.WriteLine($"  Materials:         {model.Materials.Count}");
@@ -157,7 +167,31 @@ Examples:
             Console.ResetColor();
             foreach (var storey in model.Storeys)
             {
-                Console.WriteLine($"    - {storey.Name,-24} Elevation: {storey.Elevation,8:F2} mm | Elements: {storey.Elements.Count}");
+                Console.WriteLine($"    - {storey.Name,-24} Elevation: {storey.Elevation,8:F2} mm | Elements: {storey.Elements.Count} | Spaces: {storey.Spaces.Count}");
+            }
+        }
+
+        if ((detailedReport || showSpaces) && model.AllSpaces.Any())
+        {
+            Console.WriteLine();
+            Console.ForegroundColor = ConsoleColor.Magenta;
+            Console.WriteLine("  Architectural Spaces & Rooms:");
+            Console.ResetColor();
+            foreach (var space in model.AllSpaces)
+            {
+                Console.WriteLine($"    - [{space.SpaceNumber ?? $"{space.Id}"}] {space.Name,-20} Area: {space.GrossFloorArea,6:F1} m² | Height: {space.Height:F1} m | Boundaries: {space.Boundaries.Count}");
+            }
+        }
+
+        if ((detailedReport || showSystems) && model.Systems.Count > 0)
+        {
+            Console.WriteLine();
+            Console.ForegroundColor = ConsoleColor.Cyan;
+            Console.WriteLine("  MEP & Building Systems:");
+            Console.ResetColor();
+            foreach (var sys in model.Systems)
+            {
+                Console.WriteLine($"    - {sys.Name,-24} Type: {sys.SystemType,-12} | Members: {sys.Elements.Count}");
             }
         }
 
@@ -449,6 +483,26 @@ Examples:
 
         sw.Stop();
         Console.WriteLine();
+
+        string? bcfPath = GetOptionValue(args, "--bcf");
+        if (!string.IsNullOrEmpty(bcfPath))
+        {
+            try
+            {
+                var model = IfcModel.Open(inputPath);
+                model.ExportValidationBcf(bcfPath);
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                Console.WriteLine($"  ✓ Exported validation issues to BCF 2.1: '{bcfPath}'");
+                Console.ResetColor();
+            }
+            catch (Exception ex)
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"  [WARN] Failed to export BCF issues: {ex.Message}");
+                Console.ResetColor();
+            }
+        }
+
         if (errors == 0)
         {
             Console.ForegroundColor = ConsoleColor.Green;

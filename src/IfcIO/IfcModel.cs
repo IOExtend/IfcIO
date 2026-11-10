@@ -35,8 +35,11 @@ public sealed class IfcModel
     public List<IfcBuildingStorey> Storeys { get; } = [];
     public List<IfcMaterial> Materials { get; } = [];
     public List<IfcTypeProduct> TypeProducts { get; } = [];
+    public List<IfcGroup> Groups { get; } = [];
+    public List<IfcSystem> Systems { get; } = [];
 
     public IEnumerable<IfcElement> AllElements => Storeys.SelectMany(s => s.Elements);
+    public IEnumerable<IfcSpace> AllSpaces => Storeys.SelectMany(s => s.Spaces);
     public IEnumerable<IfcOpeningElement> AllOpenings => AllElements.SelectMany(e => e.Openings);
 
     public IfcModel()
@@ -268,6 +271,151 @@ public sealed class IfcModel
         return opening;
     }
 
+    /// <summary>
+    /// Adds an architectural space, room, or zone to the specified storey.
+    /// </summary>
+    public IfcSpace AddSpace(
+        string name,
+        string? spaceNumber = null,
+        string? longName = null,
+        double grossFloorArea = 0.0,
+        double height = 3.0,
+        IfcBuildingStorey? storey = null,
+        IfcMesh? mesh = null)
+    {
+        storey ??= Storeys[0];
+        int nextId = (storey.Elements.Count + storey.Spaces.Count + 1) * 10;
+        var space = new IfcSpace
+        {
+            Id = nextId,
+            Name = name,
+            SpaceNumber = spaceNumber,
+            LongName = longName ?? name,
+            GrossFloorArea = grossFloorArea,
+            NetFloorArea = grossFloorArea > 0 ? grossFloorArea * 0.95 : 0.0,
+            Height = height,
+            GrossVolume = grossFloorArea * height,
+            Mesh = mesh,
+        };
+        storey.Spaces.Add(space);
+        return space;
+    }
+
+    /// <summary>
+    /// Creates and registers a functional MEP building system (e.g. HVAC, Hydronic, Plumbing, Electrical).
+    /// </summary>
+    public IfcSystem AddSystem(string name, string systemType = "HVAC", IEnumerable<IfcElement>? elements = null)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        var sys = new IfcSystem(name, systemType);
+        if (elements is not null)
+        {
+            sys.Elements.AddRange(elements);
+        }
+        Systems.Add(sys);
+        return sys;
+    }
+
+    /// <summary>
+    /// Creates and registers a logical grouping of building elements.
+    /// </summary>
+    public IfcGroup AddGroup(string name, string? description = null, IEnumerable<IfcElement>? elements = null)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        var group = new IfcGroup { Name = name, Description = description };
+        if (elements is not null)
+        {
+            group.Elements.AddRange(elements);
+        }
+        Groups.Add(group);
+        return group;
+    }
+
+    /// <summary>Exports a collection of BCF topics to a buildingSMART BCF 2.1 zip archive (.bcfzip).</summary>
+    public void SaveBcf(string path, IEnumerable<Bcf.BcfTopic> topics)
+    {
+        Bcf.BcfZipExporter.Save(path, topics, ProjectName);
+    }
+
+    /// <summary>Exports a collection of BCF topics to a stream in BCF 2.1 format.</summary>
+    public void SaveBcf(Stream stream, IEnumerable<Bcf.BcfTopic> topics)
+    {
+        Bcf.BcfZipExporter.Write(stream, topics, ProjectName);
+    }
+
+    /// <summary>
+    /// Runs model validation and exports any detected errors or warnings as a BCF 2.1 archive (.bcfzip)
+    /// with affected element GUIDs linked for cross-discipline issue coordination.
+    /// </summary>
+    public void ExportValidationBcf(string path)
+    {
+        var result = Validate();
+        var topics = new List<Bcf.BcfTopic>();
+
+        foreach (var err in result.Errors)
+        {
+            var topic = new Bcf.BcfTopic(
+                title: $"Validation Error: {err.RuleId}",
+                description: err.Message,
+                topicType: "Error",
+                priority: "High");
+
+            string? targetGuid = err.GlobalId;
+            if (string.IsNullOrEmpty(targetGuid) && err.ElementId.HasValue)
+            {
+                var elem = AllElements.FirstOrDefault(e => e.Id == err.ElementId.Value);
+                if (elem is not null) targetGuid = elem.GlobalId;
+                else
+                {
+                    var sp = AllSpaces.FirstOrDefault(s => s.Id == err.ElementId.Value);
+                    if (sp is not null) targetGuid = sp.GlobalId;
+                }
+            }
+
+            if (!string.IsNullOrEmpty(targetGuid))
+            {
+                var vp = new Bcf.BcfViewpoint();
+                vp.SelectedElementGuids.Add(targetGuid);
+                topic.Viewpoints.Add(vp);
+            }
+            topics.Add(topic);
+        }
+
+        foreach (var warn in result.Warnings)
+        {
+            var topic = new Bcf.BcfTopic(
+                title: $"Validation Warning: {warn.RuleId}",
+                description: warn.Message,
+                topicType: "Warning",
+                priority: "Normal");
+
+            string? targetGuid = warn.GlobalId;
+            if (string.IsNullOrEmpty(targetGuid) && warn.ElementId.HasValue)
+            {
+                var elem = AllElements.FirstOrDefault(e => e.Id == warn.ElementId.Value);
+                if (elem is not null) targetGuid = elem.GlobalId;
+                else
+                {
+                    var sp = AllSpaces.FirstOrDefault(s => s.Id == warn.ElementId.Value);
+                    if (sp is not null) targetGuid = sp.GlobalId;
+                }
+            }
+
+            if (!string.IsNullOrEmpty(targetGuid))
+            {
+                var vp = new Bcf.BcfViewpoint();
+                vp.SelectedElementGuids.Add(targetGuid);
+                topic.Viewpoints.Add(vp);
+            }
+            topics.Add(topic);
+        }
+
+        SaveBcf(path, topics);
+    }
+
+    /// <summary>Loads BCF topics from a BCF 2.1 zip archive (.bcfzip).</summary>
+    public static List<Bcf.BcfTopic> LoadBcf(string path) => Bcf.BcfZipExporter.Open(path);
+
     /// <summary>Validates the model against buildingSMART MVD and geometric integrity rules.</summary>
     public Validation.IfcValidationResult Validate() => Validation.IfcValidator.Validate(this);
 
@@ -316,6 +464,14 @@ public sealed class IfcModel
 
     /// <summary>Exports the model to Wavefront OBJ format (.obj + .mtl).</summary>
     public void SaveObj(string path) => IfcObjExporter.Save(this, path);
+
+    /// <summary>Serializes the IFC model to an ISO 10303-21 STEP physical string.</summary>
+    public string ToStepString(string fileName = "model.ifc")
+    {
+        using var sw = new StringWriter();
+        Save(sw, fileName);
+        return sw.ToString();
+    }
 
     /// <summary>Serializes the IFC model to a <see cref="TextWriter"/> in ISO 10303-21 format.</summary>
     public void Save(TextWriter writer, string fileName = "model.ifc")
@@ -402,6 +558,7 @@ public sealed class IfcModel
         // 6. Storeys & Elements
         var storeyIds = new List<int>();
         var typeToElementsMap = new Dictionary<IfcTypeProduct, List<int>>();
+        var elementEntityMap = new Dictionary<IfcElement, int>();
 
         bool useTessellation = (Schema == IfcSchema.Ifc4 && UseTessellationInIfc4);
 
@@ -413,7 +570,7 @@ public sealed class IfcModel
                 $"{StepWriter.Str(storey.GlobalId ?? IfcGuid.NewGuid())},{StepWriter.Ref(ownerHistoryId)},{StepWriter.Str(storey.Name)},$,$,{StepWriter.Ref(storeyPlacementId)},$,$,.ELEMENT.,{StepWriter.Real(storey.Elevation)}");
             storeyIds.Add(storeyId);
 
-            var storeyElementIds = new List<int>(storey.Elements.Count);
+            var storeyElementIds = new List<int>(storey.Elements.Count + storey.Spaces.Count);
 
             for (int eIdx = 0; eIdx < storey.Elements.Count; eIdx++)
             {
@@ -431,6 +588,7 @@ public sealed class IfcModel
 
                 int elemId = AddIfcProduct(w, ifcType, elemGuid, ownerHistoryId, element.Name, prodPlacementId, prodShapeId, element.Tag ?? element.Id.ToString(CultureInfo.InvariantCulture));
                 storeyElementIds.Add(elemId);
+                elementEntityMap[element] = elemId;
 
                 // Openings (voids) and fillings
                 if (element.Openings.Count > 0)
@@ -462,6 +620,7 @@ public sealed class IfcModel
 
                             int fillElemId = AddIfcProduct(w, fillType, fillGuid, ownerHistoryId, filling.Name, fillPlacementId, fillShapeId, filling.Tag ?? filling.Id.ToString(CultureInfo.InvariantCulture));
                             storeyElementIds.Add(fillElemId);
+                            elementEntityMap[filling] = fillElemId;
 
                             w.Add("IFCRELFILLSELEMENT",
                                 $"{StepWriter.Str(IfcGuid.NewGuid())},{StepWriter.Ref(ownerHistoryId)},$,$,{StepWriter.Ref(openElemId)},{StepWriter.Ref(fillElemId)}");
@@ -480,68 +639,56 @@ public sealed class IfcModel
                     list.Add(elemId);
                 }
 
-                // Property sets
-                if (element.PropertySets.Count > 0)
+                // Property sets & Quantity sets
+                WritePropertyAndQuantitySets(w, element, elemId, ownerHistoryId);
+            }
+
+            // Spaces within this storey
+            for (int spIdx = 0; spIdx < storey.Spaces.Count; spIdx++)
+            {
+                var space = storey.Spaces[spIdx];
+                int spacePlacementId = w.Add("IFCLOCALPLACEMENT",
+                    $"{StepWriter.Ref(storeyPlacementId)},{StepWriter.Ref(worldPlacement3dId)}");
+
+                int spaceShapeId = 0;
+                if (space.GetEffectiveMesh() is not null)
                 {
-                    foreach (var pset in element.PropertySets)
-                    {
-                        var propIds = new List<int>();
-                        foreach (var prop in pset.Properties)
-                        {
-                            string typeWrapper = prop.Type switch
-                            {
-                                "IfcInteger" => $"IFCINTEGER({prop.Value})",
-                                "IfcReal" => $"IFCREAL({prop.Value})",
-                                "IfcBoolean" => $"IFCBOOLEAN({prop.Value})",
-                                _ => $"IFCTEXT({StepWriter.Str(prop.Value)})",
-                            };
-
-                            int pValId = w.Add("IFCPROPERTYSINGLEVALUE",
-                                $"{StepWriter.Str(prop.Name)},$,{typeWrapper},$");
-                            propIds.Add(pValId);
-                        }
-
-                        int psetId = w.Add("IFCPROPERTYSET",
-                            $"{StepWriter.Str(IfcGuid.NewGuid())},{StepWriter.Ref(ownerHistoryId)},{StepWriter.Str(pset.Name)},$,{StepWriter.List(propIds.Select(StepWriter.Ref))}");
-
-                        w.Add("IFCRELDEFINESBYPROPERTIES",
-                            $"{StepWriter.Str(IfcGuid.NewGuid())},{StepWriter.Ref(ownerHistoryId)},$,$,({StepWriter.Ref(elemId)}),{StepWriter.Ref(psetId)}");
-                    }
+                    spaceShapeId = WriteElementShape(w, space, bodySubContextId, styleCache, useTessellation);
                 }
+                string spaceShapeRef = spaceShapeId > 0 ? StepWriter.Ref(spaceShapeId) : "$";
 
-                // Quantity sets
-                if (element.QuantitySets.Count > 0)
+                string spaceGuid = space.GlobalId ?? IfcGuid.FromElementId(space.Id, "IfcIO-Space");
+                string intExt = space.InteriorOrExteriorSpace == IfcInternalOrExternal.External ? ".EXTERNAL." : ".INTERNAL.";
+
+                int spaceId = w.Add("IFCSPACE",
+                    $"{StepWriter.Str(spaceGuid)},{StepWriter.Ref(ownerHistoryId)},{StepWriter.Str(space.Name)},{StepWriter.Str(space.SpaceNumber)},$,{StepWriter.Ref(spacePlacementId)},{spaceShapeRef},{StepWriter.Str(space.LongName ?? space.Name)},{intExt},.ELEMENT.,{StepWriter.Real(storey.Elevation)}");
+
+                storeyElementIds.Add(spaceId);
+                elementEntityMap[space] = spaceId;
+
+                WritePropertyAndQuantitySets(w, space, spaceId, ownerHistoryId);
+            }
+
+            // Space boundaries
+            for (int spIdx = 0; spIdx < storey.Spaces.Count; spIdx++)
+            {
+                var space = storey.Spaces[spIdx];
+                if (elementEntityMap.TryGetValue(space, out int spaceId))
                 {
-                    foreach (var qset in element.QuantitySets)
+                    foreach (var boundary in space.Boundaries)
                     {
-                        var qIds = new List<int>();
-                        foreach (var q in qset.Quantities)
+                        string boundName = string.IsNullOrEmpty(boundary.Name) ? "SpaceBoundary" : boundary.Name;
+                        int? relatedElemId = null;
+                        if (boundary.RelatedBuildingElement is not null && elementEntityMap.TryGetValue(boundary.RelatedBuildingElement, out int rId))
                         {
-                            int qId = q switch
-                            {
-                                IfcQuantityLength ql => w.Add("IFCQUANTITYLENGTH",
-                                    $"{StepWriter.Str(ql.Name)},{StepWriter.Str(ql.Description)},$,{StepWriter.Real(ql.LengthValue)}"),
-                                IfcQuantityArea qa => w.Add("IFCQUANTITYAREA",
-                                    $"{StepWriter.Str(qa.Name)},{StepWriter.Str(qa.Description)},$,{StepWriter.Real(qa.AreaValue)}"),
-                                IfcQuantityVolume qv => w.Add("IFCQUANTITYVOLUME",
-                                    $"{StepWriter.Str(qv.Name)},{StepWriter.Str(qv.Description)},$,{StepWriter.Real(qv.VolumeValue)}"),
-                                IfcQuantityCount qc => w.Add("IFCQUANTITYCOUNT",
-                                    $"{StepWriter.Str(qc.Name)},{StepWriter.Str(qc.Description)},$,{StepWriter.Real(qc.CountValue)}"),
-                                IfcQuantityWeight qw => w.Add("IFCQUANTITYWEIGHT",
-                                    $"{StepWriter.Str(qw.Name)},{StepWriter.Str(qw.Description)},$,{StepWriter.Real(qw.WeightValue)}"),
-                                _ => -1,
-                            };
-                            if (qId > 0) qIds.Add(qId);
+                            relatedElemId = rId;
                         }
+                        string relatedRef = relatedElemId.HasValue ? StepWriter.Ref(relatedElemId.Value) : "$";
+                        string physVirt = boundary.PhysicalOrVirtual == IfcPhysicalOrVirtual.Virtual ? ".VIRTUAL." : ".PHYSICAL.";
+                        string intExtBound = boundary.InternalOrExternal == IfcInternalOrExternal.External ? ".EXTERNAL." : ".INTERNAL.";
 
-                        if (qIds.Count > 0)
-                        {
-                            int qsetId = w.Add("IFCELEMENTQUANTITY",
-                                $"{StepWriter.Str(IfcGuid.NewGuid())},{StepWriter.Ref(ownerHistoryId)},{StepWriter.Str(qset.Name)},{StepWriter.Str(qset.Description)},{StepWriter.Str(qset.MethodOfMeasurement)},{StepWriter.List(qIds.Select(StepWriter.Ref))}");
-
-                            w.Add("IFCRELDEFINESBYPROPERTIES",
-                                $"{StepWriter.Str(IfcGuid.NewGuid())},{StepWriter.Ref(ownerHistoryId)},$,$,({StepWriter.Ref(elemId)}),{StepWriter.Ref(qsetId)}");
-                        }
+                        w.Add("IFCRELSPACEBOUNDARY",
+                            $"{StepWriter.Str(IfcGuid.NewGuid())},{StepWriter.Ref(ownerHistoryId)},{StepWriter.Str(boundName)},{StepWriter.Str(boundary.Description)},{StepWriter.Ref(spaceId)},{relatedRef},$,{physVirt},{intExtBound}");
                     }
                 }
             }
@@ -569,7 +716,121 @@ public sealed class IfcModel
                 $"{StepWriter.Str(IfcGuid.NewGuid())},{StepWriter.Ref(ownerHistoryId)},$,$,{StepWriter.Ref(buildingId)},{StepWriter.List(storeyIds.Select(StepWriter.Ref))}");
         }
 
+        // 8. Systems and Groups
+        foreach (var sys in Systems)
+        {
+            string sysGuid = sys.GlobalId ?? IfcGuid.NewGuid();
+            int sysId = (Schema == IfcSchema.Ifc4)
+                ? w.Add("IFCDISTRIBUTIONSYSTEM", $"{StepWriter.Str(sysGuid)},{StepWriter.Ref(ownerHistoryId)},{StepWriter.Str(sys.Name)},{StepWriter.Str(sys.Description)},{StepWriter.Str(sys.SystemType)},$,$,.NOTDEFINED.")
+                : w.Add("IFCSYSTEM", $"{StepWriter.Str(sysGuid)},{StepWriter.Ref(ownerHistoryId)},{StepWriter.Str(sys.Name)},{StepWriter.Str(sys.Description)},{StepWriter.Str(sys.SystemType)}");
+
+            var memberIds = new List<int>();
+            foreach (var elem in sys.Elements)
+            {
+                if (elementEntityMap.TryGetValue(elem, out int memberId))
+                {
+                    memberIds.Add(memberId);
+                }
+            }
+
+            if (memberIds.Count > 0)
+            {
+                w.Add("IFCRELASSIGNSTOGROUP",
+                    $"{StepWriter.Str(IfcGuid.NewGuid())},{StepWriter.Ref(ownerHistoryId)},$,$,{StepWriter.List(memberIds.Select(StepWriter.Ref))},$,{StepWriter.Ref(sysId)}");
+            }
+        }
+
+        foreach (var grp in Groups)
+        {
+            string grpGuid = grp.GlobalId ?? IfcGuid.NewGuid();
+            int grpId = w.Add("IFCGROUP",
+                $"{StepWriter.Str(grpGuid)},{StepWriter.Ref(ownerHistoryId)},{StepWriter.Str(grp.Name)},{StepWriter.Str(grp.Description)}");
+
+            var memberIds = new List<int>();
+            foreach (var elem in grp.Elements)
+            {
+                if (elementEntityMap.TryGetValue(elem, out int memberId))
+                {
+                    memberIds.Add(memberId);
+                }
+            }
+
+            if (memberIds.Count > 0)
+            {
+                w.Add("IFCRELASSIGNSTOGROUP",
+                    $"{StepWriter.Str(IfcGuid.NewGuid())},{StepWriter.Ref(ownerHistoryId)},$,$,{StepWriter.List(memberIds.Select(StepWriter.Ref))},$,{StepWriter.Ref(grpId)}");
+            }
+        }
+
         w.WriteTo(writer, fileName, schemaStr, viewDef, Application, Organization);
+    }
+
+    private static void WritePropertyAndQuantitySets(StepWriter w, IfcElement element, int entityId, int ownerHistoryId)
+    {
+        // Property sets
+        if (element.PropertySets.Count > 0)
+        {
+            foreach (var pset in element.PropertySets)
+            {
+                var propIds = new List<int>();
+                foreach (var prop in pset.Properties)
+                {
+                    string typeWrapper = prop.Type switch
+                    {
+                        "IfcInteger" => $"IFCINTEGER({prop.Value})",
+                        "IfcReal" => $"IFCREAL({prop.Value})",
+                        "IfcBoolean" => $"IFCBOOLEAN({prop.Value})",
+                        _ => $"IFCTEXT({StepWriter.Str(prop.Value)})",
+                    };
+
+                    int pValId = w.Add("IFCPROPERTYSINGLEVALUE",
+                        $"{StepWriter.Str(prop.Name)},$,{typeWrapper},$");
+                    propIds.Add(pValId);
+                }
+
+                int psetId = w.Add("IFCPROPERTYSET",
+                    $"{StepWriter.Str(IfcGuid.NewGuid())},{StepWriter.Ref(ownerHistoryId)},{StepWriter.Str(pset.Name)},$,{StepWriter.List(propIds.Select(StepWriter.Ref))}");
+
+                w.Add("IFCRELDEFINESBYPROPERTIES",
+                    $"{StepWriter.Str(IfcGuid.NewGuid())},{StepWriter.Ref(ownerHistoryId)},$,$,({StepWriter.Ref(entityId)}),{StepWriter.Ref(psetId)}");
+            }
+        }
+
+        // Quantity sets
+        if (element.QuantitySets.Count > 0)
+        {
+            foreach (var qset in element.QuantitySets)
+            {
+                var qIds = new List<int>();
+                foreach (var q in qset.Quantities)
+                {
+                    int qId = q switch
+                    {
+                        IfcQuantityLength ql => w.Add("IFCQUANTITYLENGTH",
+                            $"{StepWriter.Str(ql.Name)},{StepWriter.Str(ql.Description)},$,{StepWriter.Real(ql.LengthValue)}"),
+                        IfcQuantityArea qa => w.Add("IFCQUANTITYAREA",
+                            $"{StepWriter.Str(qa.Name)},{StepWriter.Str(qa.Description)},$,{StepWriter.Real(qa.AreaValue)}"),
+                        IfcQuantityVolume qv => w.Add("IFCQUANTITYVOLUME",
+                            $"{StepWriter.Str(qv.Name)},{StepWriter.Str(qv.Description)},$,{StepWriter.Real(qv.VolumeValue)}"),
+                        IfcQuantityCount qc => w.Add("IFCQUANTITYCOUNT",
+                            $"{StepWriter.Str(qc.Name)},{StepWriter.Str(qc.Description)},$,{StepWriter.Real(qc.CountValue)}"),
+                        IfcQuantityWeight qw => w.Add("IFCQUANTITYWEIGHT",
+                            $"{StepWriter.Str(qw.Name)},{StepWriter.Str(qw.Description)},$,{StepWriter.Real(qw.WeightValue)}"),
+                        _ => -1,
+                    };
+                    if (qId > 0) qIds.Add(qId);
+                }
+
+                if (qIds.Count > 0)
+                {
+                    int qsetId = w.Add("IFCELEMENTQUANTITY",
+                        $"{StepWriter.Str(IfcGuid.NewGuid())},{StepWriter.Ref(ownerHistoryId)},{StepWriter.Str(qset.Name)},{StepWriter.Str(qset.Description)},{StepWriter.Str(qset.MethodOfMeasurement)},{StepWriter.List(qIds.Select(StepWriter.Ref))}");
+
+                    w.Add("IFCRELDEFINESBYPROPERTIES",
+                        $"{StepWriter.Str(IfcGuid.NewGuid())},{StepWriter.Ref(ownerHistoryId)},$,$,({StepWriter.Ref(entityId)}),{StepWriter.Ref(qsetId)}");
+                }
+            }
+        }
     }
 
     /// <summary>Parses an existing IFC STEP file (.ifc or .ifczip) from disk into a structured model.</summary>
@@ -817,17 +1078,12 @@ public sealed class IfcModel
             var targetStorey = elementToStoreyMap.TryGetValue(entity.Id, out var s) ? s : defaultStorey;
 
             bool isOpening = entity.Type.Equals("IFCOPENINGELEMENT", StringComparison.OrdinalIgnoreCase);
+            bool isSpace = entity.Type.Equals("IFCSPACE", StringComparison.OrdinalIgnoreCase);
 
-            var element = isOpening
-                ? new IfcOpeningElement
-                {
-                    Id = entity.Id,
-                    Name = name,
-                    IfcType = entity.Type,
-                    GlobalId = globalId,
-                    Tag = tag,
-                }
-                : new IfcElement
+            IfcElement element;
+            if (isOpening)
+            {
+                element = new IfcOpeningElement
                 {
                     Id = entity.Id,
                     Name = name,
@@ -835,6 +1091,34 @@ public sealed class IfcModel
                     GlobalId = globalId,
                     Tag = tag,
                 };
+            }
+            else if (isSpace)
+            {
+                string? spaceNum = entity.GetString(3);
+                string? longName = entity.GetString(7);
+                var space = new IfcSpace
+                {
+                    Id = entity.Id,
+                    Name = name,
+                    LongName = longName ?? name,
+                    SpaceNumber = spaceNum,
+                    IfcType = entity.Type,
+                    GlobalId = globalId,
+                    Tag = spaceNum,
+                };
+                element = space;
+            }
+            else
+            {
+                element = new IfcElement
+                {
+                    Id = entity.Id,
+                    Name = name,
+                    IfcType = entity.Type,
+                    GlobalId = globalId,
+                    Tag = tag,
+                };
+            }
 
             // Link property sets and quantity sets
             if (elementPropertySets.TryGetValue(entity.Id, out var psets))
@@ -844,6 +1128,24 @@ public sealed class IfcModel
             if (elementQuantitySets.TryGetValue(entity.Id, out var qsets))
             {
                 element.QuantitySets.AddRange(qsets);
+
+                if (element is IfcSpace spaceElem)
+                {
+                    foreach (var qs in qsets)
+                    {
+                        var area = qs.GetArea("GrossFloorArea") ?? qs.GetArea("NetFloorArea") ?? qs.GetArea("GrossArea");
+                        if (area.HasValue && spaceElem.GrossFloorArea <= 0) spaceElem.GrossFloorArea = area.Value;
+
+                        var netArea = qs.GetArea("NetFloorArea");
+                        if (netArea.HasValue && spaceElem.NetFloorArea <= 0) spaceElem.NetFloorArea = netArea.Value;
+
+                        var height = qs.GetLength("Height") ?? qs.GetLength("ClearHeight");
+                        if (height.HasValue && spaceElem.Height <= 0) spaceElem.Height = height.Value;
+
+                        var vol = qs.GetVolume("GrossVolume") ?? qs.GetVolume("NetVolume");
+                        if (vol.HasValue && spaceElem.GrossVolume <= 0) spaceElem.GrossVolume = vol.Value;
+                    }
+                }
             }
 
             // Parse Mesh / Solid Geometry
@@ -870,7 +1172,11 @@ public sealed class IfcModel
             }
 
             allElementsMap[entity.Id] = element;
-            if (!isOpening)
+            if (isSpace)
+            {
+                targetStorey.Spaces.Add((IfcSpace)element);
+            }
+            else if (!isOpening)
             {
                 targetStorey.Elements.Add(element);
             }
@@ -903,6 +1209,91 @@ public sealed class IfcModel
                 allElementsMap.TryGetValue(fillId.Value, out var fillElem))
             {
                 opening.Filling = fillElem;
+            }
+        }
+
+        // 8. Parse Space Boundaries (IFCRELSPACEBOUNDARY)
+        foreach (var relBound in step.OfType("IFCRELSPACEBOUNDARY"))
+        {
+            int? spaceId = relBound.GetRef(4);
+            int? relElemId = relBound.GetRef(5);
+            if (spaceId.HasValue && allElementsMap.TryGetValue(spaceId.Value, out var spaceElem) && spaceElem is IfcSpace targetSpace)
+            {
+                IfcElement? relElem = null;
+                if (relElemId.HasValue && allElementsMap.TryGetValue(relElemId.Value, out var boundElem))
+                {
+                    relElem = boundElem;
+                }
+
+                string bName = relBound.GetString(2) ?? "Boundary";
+                string? bDesc = relBound.GetString(3);
+                string? physVirtStr = relBound.GetString(7);
+                string? intExtStr = relBound.GetString(8);
+
+                var bound = new IfcSpaceBoundary
+                {
+                    Name = bName,
+                    Description = bDesc,
+                    PhysicalOrVirtual = physVirtStr?.Contains("VIRTUAL", StringComparison.OrdinalIgnoreCase) == true ? IfcPhysicalOrVirtual.Virtual : IfcPhysicalOrVirtual.Physical,
+                    InternalOrExternal = intExtStr?.Contains("EXTERNAL", StringComparison.OrdinalIgnoreCase) == true ? IfcInternalOrExternal.External : IfcInternalOrExternal.Internal,
+                    RelatedBuildingElement = relElem,
+                };
+                targetSpace.Boundaries.Add(bound);
+            }
+        }
+
+        // 9. Parse Systems & Groups (IFCSYSTEM, IFCDISTRIBUTIONSYSTEM, IFCGROUP, IFCRELASSIGNSTOGROUP)
+        var groupMap = new Dictionary<int, IfcGroup>();
+
+        foreach (var sysEnt in step.OfType("IFCSYSTEM").Concat(step.OfType("IFCDISTRIBUTIONSYSTEM")))
+        {
+            string sysGuid = sysEnt.GetString(0) ?? IfcGuid.NewGuid();
+            string sysName = sysEnt.GetString(2) ?? "System";
+            string? sysDesc = sysEnt.GetString(3);
+            string sysType = sysEnt.GetString(4) ?? "HVAC";
+
+            var sys = new IfcSystem
+            {
+                Name = sysName,
+                Description = sysDesc,
+                SystemType = sysType,
+                GlobalId = sysGuid,
+            };
+            model.Systems.Add(sys);
+            groupMap[sysEnt.Id] = sys;
+        }
+
+        foreach (var grpEnt in step.OfType("IFCGROUP"))
+        {
+            if (groupMap.ContainsKey(grpEnt.Id)) continue;
+
+            string grpGuid = grpEnt.GetString(0) ?? IfcGuid.NewGuid();
+            string grpName = grpEnt.GetString(2) ?? "Group";
+            string? grpDesc = grpEnt.GetString(3);
+
+            var grp = new IfcGroup
+            {
+                Name = grpName,
+                Description = grpDesc,
+                GlobalId = grpGuid,
+            };
+            model.Groups.Add(grp);
+            groupMap[grpEnt.Id] = grp;
+        }
+
+        foreach (var relGroup in step.OfType("IFCRELASSIGNSTOGROUP"))
+        {
+            int? groupId = relGroup.GetRef(6);
+            if (groupId.HasValue && groupMap.TryGetValue(groupId.Value, out var targetGroup))
+            {
+                var memberIds = relGroup.GetRefList(4);
+                foreach (int mId in memberIds)
+                {
+                    if (allElementsMap.TryGetValue(mId, out var elem) && !targetGroup.Elements.Contains(elem))
+                    {
+                        targetGroup.Elements.Add(elem);
+                    }
+                }
             }
         }
 
@@ -1385,6 +1776,7 @@ public sealed class IfcModel
             || type.StartsWith("IFCCOVERING", StringComparison.OrdinalIgnoreCase)
             || type.StartsWith("IFCFURNISHINGELEMENT", StringComparison.OrdinalIgnoreCase)
             || type.StartsWith("IFCOPENINGELEMENT", StringComparison.OrdinalIgnoreCase)
+            || type.Equals("IFCSPACE", StringComparison.OrdinalIgnoreCase)
             || type.Equals("IFCBUILDINGELEMENTPROXY", StringComparison.OrdinalIgnoreCase);
     }
 

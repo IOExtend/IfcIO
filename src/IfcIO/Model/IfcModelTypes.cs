@@ -213,6 +213,7 @@ public sealed class IfcBuildingStorey
     public double Elevation { get; set; }
     public string? GlobalId { get; set; }
     public List<IfcElement> Elements { get; } = [];
+    public List<IfcSpace> Spaces { get; } = [];
 }
 
 /// <summary>
@@ -298,5 +299,108 @@ public sealed class IfcOpeningElement : IfcElement
     public IfcOpeningElement()
     {
         IfcType = "IFCOPENINGELEMENT";
+    }
+}
+
+/// <summary>
+/// Physical or virtual space boundary definition.
+/// </summary>
+public enum IfcPhysicalOrVirtual
+{
+    Physical,
+    Virtual,
+    NotDefined
+}
+
+/// <summary>
+/// Internal or external space boundary classification.
+/// </summary>
+public enum IfcInternalOrExternal
+{
+    Internal,
+    External,
+    NotDefined
+}
+
+/// <summary>
+/// Connects a space to an enclosing physical element (wall, slab, column) or virtual boundary.
+/// Conforms to buildingSMART standard IFCRELSPACEBOUNDARY.
+/// </summary>
+public sealed class IfcSpaceBoundary
+{
+    public string Name { get; set; } = string.Empty;
+    public string? Description { get; set; }
+    public IfcPhysicalOrVirtual PhysicalOrVirtual { get; set; } = IfcPhysicalOrVirtual.Physical;
+    public IfcInternalOrExternal InternalOrExternal { get; set; } = IfcInternalOrExternal.Internal;
+    public IfcElement? RelatedBuildingElement { get; set; }
+    public IfcMesh? ConnectionGeometry { get; set; }
+}
+
+/// <summary>
+/// Represents an enclosed space, room, or zone within a building,
+/// conforming to buildingSMART standard IFCSPACE.
+/// </summary>
+public sealed class IfcSpace : IfcElement
+{
+    public string? LongName { get; set; }
+    public string? SpaceNumber { get; set; }
+    public IfcInternalOrExternal InteriorOrExteriorSpace { get; set; } = IfcInternalOrExternal.Internal;
+    public double GrossFloorArea { get; set; }
+    public double NetFloorArea { get; set; }
+    public double GrossPerimeter { get; set; }
+    public double Height { get; set; } = 3.0;
+    public double GrossVolume { get; set; }
+    public List<IfcSpaceBoundary> Boundaries { get; } = [];
+
+    public IfcSpace()
+    {
+        IfcType = "IFCSPACE";
+    }
+}
+
+/// <summary>
+/// An arbitrary logical grouping of building elements,
+/// conforming to buildingSMART standard IFCGROUP.
+/// </summary>
+public class IfcGroup
+{
+    public string Name { get; set; } = string.Empty;
+    public string? Description { get; set; }
+    public string? GlobalId { get; set; }
+    public List<IfcElement> Elements { get; } = [];
+    public List<IfcPropertySet> PropertySets { get; } = [];
+
+    public IfcGroup() { }
+
+    public IfcGroup(string name, string? description = null)
+    {
+        Name = name;
+        Description = description;
+    }
+
+    public IfcPropertySet GetOrCreatePropertySet(string name)
+    {
+        var existing = PropertySets.Find(p => p.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        if (existing is not null) return existing;
+        var pset = new IfcPropertySet(name);
+        PropertySets.Add(pset);
+        return pset;
+    }
+}
+
+/// <summary>
+/// A functional building system grouping elements (e.g. HVAC, Piping, Electrical, FireProtection),
+/// conforming to buildingSMART standard IFCSYSTEM (or IFCDISTRIBUTIONSYSTEM in IFC4).
+/// </summary>
+public sealed class IfcSystem : IfcGroup
+{
+    public string SystemType { get; set; } = "HVAC";
+    public string? PredefinedType { get; set; }
+
+    public IfcSystem() { }
+
+    public IfcSystem(string name, string systemType = "HVAC") : base(name)
+    {
+        SystemType = systemType;
     }
 }

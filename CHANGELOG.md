@@ -2,6 +2,37 @@
 
 All notable changes to the `IfcIO` library are documented in this file.
 
+## [0.5.0] - 2026-11-10
+
+### Major Additions & Capabilities
+- **Architectural & MEP Spaces (`IfcSpace` / `IFCSPACE`)**:
+  - Strongly-typed `IfcSpace` model representing spatial structures, rooms, zones, and MEP compartments.
+  - Attributes: `SpaceNumber` (tag/description), `LongName`, `GrossFloorArea`, `NetFloorArea`, `Height`, `GrossVolume`, `InteriorOrExteriorSpace`.
+  - Containment in `IfcBuildingStorey.Spaces` and model aggregation via `model.AllSpaces`.
+  - Convenient model builder `model.AddSpace(name, spaceNumber, longName, grossFloorArea, height, storey, mesh)`.
+  - Full ISO 10303-21 STEP physical file serialization (`IFCSPACE`) and deserialization.
+- **Space Boundaries (`IfcSpaceBoundary` / `IFCRELSPACEBOUNDARY`)**:
+  - Strongly-typed `IfcSpaceBoundary` linking spaces to enclosing architectural and structural elements (walls, slabs, columns).
+  - Classification: `PhysicalOrVirtual` (`Physical`, `Virtual`), `InternalOrExternal` (`Internal`, `External`).
+  - Full STEP serialization and deserialization via `IFCRELSPACEBOUNDARY`.
+- **Building Systems & Groups (`IfcSystem` / `IfcGroup`)**:
+  - `IfcSystem` representing MEP distribution networks (`IFCDISTRIBUTIONSYSTEM`) and functional building systems (`IFCSYSTEM`).
+  - `IfcGroup` representing generic element groups (`IFCGROUP`).
+  - Relationship assignment via `IFCRELASSIGNSTOGROUP` with bidirectional referencing.
+  - Model-level helpers: `model.AddSystem(...)`, `model.AddGroup(...)`, `model.Systems`, `model.Groups`.
+- **buildingSMART BCF 2.1 Issue Management (`IfcIO.Bcf`)**:
+  - Complete, zero-dependency read/write implementation of the buildingSMART BIM Collaboration Format 2.1 specification (`.bcfzip`).
+  - Strongly-typed models: `BcfTopic`, `BcfComment`, `BcfViewpoint`.
+  - Viewpoint camera parameters (`CameraPosition`, `CameraDirection`, `CameraUpVector`, `FieldOfView`) and selected IFC element GUIDs.
+  - Serialization engine `BcfZipExporter`: generates compliant `bcf.version`, `markup.bcf`, and `viewpoint.bcfv` XML documents.
+  - Validation-to-BCF pipeline: `model.ExportValidationBcf("issues.bcfzip")` converts all validation errors and warnings into actionable BCF topics with attached IFC GUIDs.
+- **Model Validation Engine Updates (`IfcValidator`)**:
+  - Space validation rules: `IFC_SPACE_AREA` (verifies positive/finite area), `IFC_SPACE_HEIGHT` (verifies positive/finite height).
+  - System and group rules: `IFC_SYSTEM_NAME`, `IFC_SYSTEM_EMPTY`, `IFC_GROUP_NAME`.
+- **CLI Enhancements (`IfcIO.Cli`)**:
+  - Added `--bcf <issues.bcfzip>` to `validate` command for automatic BCF report generation.
+  - Added `--spaces` and `--systems` flags to `info` command to inspect spatial structures and MEP systems.
+
 ## [0.4.0] - 2026-11-10
 
 ### Major Additions & Capabilities

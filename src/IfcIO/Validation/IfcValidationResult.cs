@@ -16,5 +16,8 @@ public sealed class IfcValidationResult
     public int WarningCount => Issues.Count(i => i.Severity == IfcIssueSeverity.Warning);
     public int InfoCount => Issues.Count(i => i.Severity == IfcIssueSeverity.Info);
 
+    public IEnumerable<IfcValidationIssue> Errors => Issues.Where(i => i.Severity == IfcIssueSeverity.Error);
+    public IEnumerable<IfcValidationIssue> Warnings => Issues.Where(i => i.Severity == IfcIssueSeverity.Warning);
+
     public static IfcValidationResult Empty { get; } = new() { Issues = [] };
 }

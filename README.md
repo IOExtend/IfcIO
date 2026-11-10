@@ -6,7 +6,7 @@
 
 **IfcIO** is a fast, 100% managed .NET library for building, reading, and exporting **Industry Foundation Classes** (`.ifc`) files compliant with **IFC2x3 Coordination View V2.0** and **IFC4 Design Transfer / Reference View** without third-party dependencies or native code.
 
-Built clean-room under the [IOExtend](https://github.com/IOExtend) organization as the shared open-standards IFC foundation for AEC/BIM projects (including [NwcIO](https://github.com/IOExtend/NwcIO) and [RvtIO](https://github.com/mahach666/RvtIO)).
+Built clean-room under the [IOExtend](https://github.com/IOExtend) organization as the shared open-standards IFC foundation for AEC/BIM projects (including [NwcIO](https://github.com/IOExtend/NwcIO) and [RvtIO](https://github.com/IOExtend/RvtIO)).
 
 ---
 
@@ -59,12 +59,24 @@ Built clean-room under the [IOExtend](https://github.com/IOExtend) organization 
   - Audits models against Information Delivery Specification (`.ids`) XML files and exports violations to BCF 2.1 archives (`.bcfzip`).
 - **Tabular Property CSV Roundtrip Bridge (`IfcCsvBridge`)**:
   - Fast CSV spreadsheet export and bulk property import conforming to `ifccsv`.
-- **3D Geometric Clash Detection (`IfcClashDetector`)**:
-  - Pure managed collision engine executing broad-phase bounding box pruning and narrow-phase Möller triangle-to-triangle intersection testing for cross-model (Structure vs MEP) and intra-model interference analysis conforming to `ifcclash`. Direct export to structured JSON and buildingSMART BCF 2.1 zip archives.
+- **3D Geometric Clash Detection & Clustering (`IfcClashDetector`, `IfcClashGrouper`)**:
+  - Pure managed collision engine executing broad-phase bounding box pruning and narrow-phase Möller triangle-to-triangle intersection testing for cross-model (Structure vs MEP) and intra-model interference analysis conforming to `ifcclash`.
+  - Intelligent clustering and grouping algorithms: 3D spatial proximity (Disjoint-Set / Union-Find), primary MEP run / structural element, building storey, and structural grid intersections.
+  - Direct export to structured JSON and buildingSMART BCF 2.1 zip archives with focused viewpoints.
+- **Spatial Grid System (`IfcGridSystem`, `IfcGridAxis`, `IfcGridIntersection`)**:
+  - Full support for straight and multi-axis spatial grids, 2D/3D intersections, nearest grid axis/intersection lookup, signed directional offset formatting (e.g. `"A (+0.50m) / 1 (-0.20m)"`), XML serialization, and automatic extraction from `IFCGRID` entities.
+- **3D Geometric Measurement Engine (`IfcMeasureEngine`)**:
+  - Point-to-point 3D distance and coordinate projections ($\Delta X, \Delta Y, \Delta Z$, horizontal distance, pitch, azimuth).
+  - Point-to-mesh shortest distance using Christer Ericson's Voronoi region algorithm.
+  - Mesh-to-mesh clearance measurement, polyline cumulative path length, and triangle calculations (area, normal, closest point).
+  - Full mesh surface area, closed volume (tetrahedron divergence theorem), and 3D centroid computation.
+- **Enhanced Model Repair & Patching Recipes (`IfcPatch`)**:
+  - Conforms to IfcOpenShell `ifcpatch` recipe architecture: `Purge`, `ResetCoordinates` (UTM origin shift), `Extract`, `Merge`, `MigrateSchema` (upgrade IFC2x3 to IFC4), `ScaleModel` (uniform scaling factor), and `SetProperties`.
 - **Semantic & Geometric Revision Comparison (`IfcDiffEngine`)**:
   - Full revision comparison between two IFC models detecting added, deleted, and modified elements (3D geometry displacement, property set deltas, quantity variations, and storey re-assignments) conforming to `ifcdiff`. Direct export to JSON and BCF 2.1 archives.
 - **Standalone 3D WebGL HTML Viewer (`IfcHtmlViewerExporter`)**:
-  - Export any IFC model to an interactive, self-contained single-file 3D HTML viewer (`.html`) with zero external scripts, CDNs, or server dependencies. Includes orbit camera controls, live multi-axis section clipping planes (Cut X, Cut Y, Cut Z), spatial tree navigation, and element property inspector.
+  - Export any IFC model to an interactive, self-contained single-file 3D HTML viewer (`.html`) with zero external scripts, CDNs, or server dependencies.
+  - Includes orbit camera controls, live multi-axis section clipping planes (Cut X, Cut Y, Cut Z), spatial tree navigation, element property inspector, interactive 2-point 3D measurement tool, and 2D canvas overlay drawing of architectural grid axes and bubble labels.
 - **Zero Dependencies**: Pure C# targeting `.NET 8` and `.NET 10`.
 
 ---
@@ -338,12 +350,108 @@ diffReport.SaveJson("ModelDiff.json");
 diffReport.SaveBcf("RevisionChanges.bcfzip");
 ```
 
+### Spatial Grid System (`IfcGridSystem`)
+
+```csharp
+using IfcIO.Grids;
+
+// Define or extract building grid lines
+var grids = new IfcGridSystem("Campus Grids");
+grids.AddAxis("A", new IfcVector3(0, -20, 0), new IfcVector3(0, 20, 0));
+grids.AddAxis("B", new IfcVector3(6, -20, 0), new IfcVector3(6, 20, 0));
+grids.AddAxis("1", new IfcVector3(-10, 0, 0), new IfcVector3(20, 0, 0));
+grids.AddAxis("2", new IfcVector3(-10, 8, 0), new IfcVector3(20, 8, 0));
+
+// Find nearest intersection and format human-readable offset location
+string location = grids.FormatLocation(new IfcVector3(0.5, -0.2, 0.0));
+// => "A (+0.50m) / 1 (-0.20m)"
+
+// Assign grid locations across all model elements and clashes
+model.AssignGridLocations(grids);
+clashReport.AssignGridLocations(grids);
+
+// Save and load XML grid definitions
+grids.SaveXml("CampusGrids.xml");
+var loadedGrids = IfcGridSystem.LoadXml("CampusGrids.xml");
+```
+
+### 3D Geometric Measurement Engine (`IfcMeasureEngine`)
+
+```csharp
+using IfcIO.Measure;
+
+// Point-to-point 3D measurement with coordinate projections
+var dist = IfcMeasureEngine.MeasureDistance(new IfcVector3(0, 0, 0), new IfcVector3(3, 4, 12));
+Console.WriteLine($"Distance: {dist.Distance:F2} m, Horiz: {dist.HorizontalDistance:F2} m, Pitch: {dist.PitchDegrees:F1}°");
+
+// Point-to-mesh shortest distance using Ericson Voronoi regions
+var pointToMesh = IfcMeasureEngine.MeasurePointToMesh(queryPoint, wallMesh);
+Console.WriteLine($"Shortest clearance: {pointToMesh.Distance:F3} m to point {pointToMesh.ClosestPoint}");
+
+// Mesh-to-mesh clearance
+var clearance = IfcMeasureEngine.MeasureMeshToMesh(ductMesh, beamMesh);
+Console.WriteLine($"Clearance between duct and beam: {clearance.Distance:F3} m");
+
+// Surface area, volume (tetrahedron divergence), and centroid
+double area = IfcMeasureEngine.ComputeMeshSurfaceArea(mesh);
+double volume = IfcMeasureEngine.ComputeMeshVolume(mesh);
+var centroid = IfcMeasureEngine.ComputeMeshCentroid(mesh);
+```
+
+### Intelligent Clash Grouping & Clustering (`IfcClashGrouper`)
+
+```csharp
+using IfcIO.Clash;
+
+// Detect clashes
+var report = archModel.DetectClashes(mepModel, options);
+report.AssignGridLocations(grids);
+
+// Group clashes by spatial 3D proximity using Union-Find clustering
+report.GroupByProximity(clusterDistance: 1.0, minGroupSize: 2);
+
+// Or group clashes by primary MEP run or structural element
+// report.GroupByPrimaryElement();
+
+// Or group by structural grid location (e.g. "A / 1", "B / 2")
+// report.GroupByGrid();
+
+// Export grouped BCF 2.1 zip archive with focused perspective viewpoints
+report.SaveBcf("GroupedClashes.bcfzip");
+```
+
+### Advanced Model Patching Recipes (`IfcPatch`)
+
+```csharp
+using IfcIO.Patch;
+using IfcIO.Schema;
+
+// Upgrade model schema to IFC4 and enable modern tessellation
+IfcPatch.MigrateSchema(model, IfcSchema.Ifc4);
+
+// Uniformly scale model geometry (e.g. convert mm to meters)
+IfcPatch.ScaleModel(model, 0.001);
+
+// Batch-set properties across elements matching an IfcSelector query
+IfcPatch.SetProperties(model, "IfcWall[LoadBearing=TRUE]", "Pset_WallCommon", new Dictionary<string, string>
+{
+    ["FireRating"] = "120",
+    ["Combustible"] = "FALSE"
+});
+
+// Purge empty property sets, quantity sets, and empty storeys
+var stats = model.Purge();
+
+// Shift large UTM coordinates to local origin (0, 0)
+model.ResetCoordinates(out var offset);
+```
+
 ### Standalone 3D WebGL HTML Viewer Export
 
 ```csharp
 using IfcIO.Exporters;
 
-// Export IFC model to an interactive, zero-dependency 3D HTML viewer
+// Export IFC model to an interactive, zero-dependency 3D HTML viewer with 3D measure & grid overlay
 model.SaveHtmlViewer("BuildingModel.html", new IfcHtmlViewerOptions
 {
     Title = "Residential Complex - Coordination Viewer",
@@ -351,6 +459,8 @@ model.SaveHtmlViewer("BuildingModel.html", new IfcHtmlViewerOptions
     IncludeQuantities = true,
     IncludeSpatialTree = true,
     IncludeSectioning = true,
+    IncludeMeasure = true,
+    IncludeGrids = true,
 });
 ```
 
@@ -368,13 +478,15 @@ dotnet tool install --global IfcIO.Cli
 
 ```sh
 # Inspect model metadata, storeys, spaces, systems, and element distribution
-ifcio info Building.ifc --report --spaces --systems
+ifcio info Building.ifc --report --spaces --systems --export-grids Grids.xml
 
 # Query elements matching IfcOpenShell-style selector
 ifcio query Building.ifc "IfcWall[LoadBearing=TRUE]"
 
-# Model repair and coordinate recipes (purge, reset UTM coordinates, extract)
+# Model repair, scaling, schema migration, and coordinate recipes
 ifcio patch Building.ifc -o Cleaned.ifc --purge --reset-coords
+ifcio patch Building.ifc -o Scaled.ifc --scale 0.001
+ifcio patch Building.ifc -o Migrated.ifc --migrate ifc4
 
 # Audit compliance against buildingSMART IDS 1.0 and export BCF issues
 ifcio validate-ids Building.ifc Requirements.ids --bcf AuditIssues.bcfzip
@@ -394,14 +506,14 @@ ifcio pack Building.ifc -o Building.ifczip
 # Extract IFC from .ifczip
 ifcio unpack Building.ifczip -o Building.ifc
 
-# Run 3D geometric clash detection between models (or within one model)
-ifcio clash Arch.ifc Mep.ifc -o Clashes.json --bcf Clashes.bcfzip --tolerance 0.002
+# Run 3D geometric clash detection with proximity clustering and grid assignment
+ifcio clash Arch.ifc Mep.ifc -o Clashes.json --bcf Clashes.bcfzip --group proximity --radius 1.5 --grids Grids.xml
 
 # Compare two IFC model revisions (added, deleted, modified)
 ifcio diff Baseline.ifc Revision.ifc -o Changes.json --bcf RevisionChanges.bcfzip
 
-# Export standalone 3D WebGL HTML viewer (.html) with zero dependencies
-ifcio view Building.ifc -o BuildingViewer.html
+# Export standalone 3D WebGL HTML viewer (.html) with interactive 3D measurement and grid overlays
+ifcio view Building.ifc -o BuildingViewer.html --grids Grids.xml
 
 # Validate ISO 10303-21 structure and export BCF 2.1 issues for coordination
 ifcio validate Building.ifc --bcf Issues.bcfzip

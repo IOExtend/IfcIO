@@ -1,6 +1,7 @@
 using IfcIO.Geometry;
 using IfcIO.Model;
 using IfcIO.Query;
+using IfcIO.Schema;
 
 namespace IfcIO.Patch;
 
@@ -334,5 +335,125 @@ public static class IfcPatch
         }
 
         return clone;
+    }
+
+    /// <summary>
+    /// Migrates an IFC model to a target schema (e.g. upgrades IFC2X3 to IFC4),
+    /// enabling modern tessellated geometries and updating schema version identifiers.
+    /// </summary>
+    public static void MigrateSchema(IfcModel model, IfcSchema targetSchema)
+    {
+        ArgumentNullException.ThrowIfNull(model);
+        model.Schema = targetSchema;
+        if (targetSchema == IfcSchema.Ifc4)
+        {
+            model.UseTessellationInIfc4 = true;
+        }
+    }
+
+    /// <summary>
+    /// Uniformly scales all 3D mesh vertices across all elements in the model by a specified scaling factor (e.g. 0.001 to convert mm to m).
+    /// </summary>
+    public static void ScaleModel(IfcModel model, double scaleFactor)
+    {
+        ArgumentNullException.ThrowIfNull(model);
+        if (Math.Abs(scaleFactor - 1.0) < 1e-9) return;
+
+        foreach (var element in model.AllElements)
+        {
+            if (element.Mesh is not null && element.Mesh.Vertices.Count > 0)
+            {
+                var newVerts = new List<IfcVector3>(element.Mesh.Vertices.Count);
+                for (int i = 0; i < element.Mesh.Vertices.Count; i++)
+                {
+                    newVerts.Add(element.Mesh.Vertices[i] * scaleFactor);
+                }
+
+                element.Mesh = IfcMesh.Create(
+                    element.Mesh.Id,
+                    element.Mesh.Name,
+                    newVerts,
+                    element.Mesh.Indices);
+            }
+        }
+
+        // Also scale storey elevations
+        foreach (var s in model.Storeys)
+        {
+            s.Elevation *= scaleFactor;
+        }
+    }
+
+    /// <summary>
+    /// Sets or updates multiple property values across all elements matching an <see cref="IfcSelector"/> query string.
+    /// </summary>
+    /// <returns>The number of elements updated.</returns>
+    public static int SetProperties(IfcModel model, string selectorQuery, string psetName, IReadOnlyDictionary<string, string> properties)
+    {
+        ArgumentNullException.ThrowIfNull(model);
+        ArgumentNullException.ThrowIfNull(selectorQuery);
+        ArgumentNullException.ThrowIfNull(psetName);
+        ArgumentNullException.ThrowIfNull(properties);
+
+        var selector = IfcSelector.Parse(selectorQuery);
+        int updated = 0;
+
+        foreach (var element in model.AllElements)
+        {
+            if (selector.Matches(element, model))
+            {
+                var pset = element.GetOrCreatePropertySet(psetName);
+                foreach (var (k, v) in properties)
+                {
+                    var prop = pset.Properties.Find(p => p.Name.Equals(k, StringComparison.OrdinalIgnoreCase));
+                    if (prop is not null)
+                    {
+                        prop.Value = v;
+                    }
+                    else
+                    {
+                        pset.Add(k, v);
+                    }
+                }
+                updated++;
+            }
+        }
+
+        return updated;
+    }
+
+    /// <summary>
+    /// Sets or updates a property value across all elements matching an <see cref="IfcSelector"/> query string.
+    /// </summary>
+    /// <returns>The number of elements updated.</returns>
+    public static int SetProperties(IfcModel model, string selectorQuery, string psetName, string propName, string value)
+    {
+        ArgumentNullException.ThrowIfNull(model);
+        ArgumentNullException.ThrowIfNull(selectorQuery);
+        ArgumentNullException.ThrowIfNull(psetName);
+        ArgumentNullException.ThrowIfNull(propName);
+
+        var selector = IfcSelector.Parse(selectorQuery);
+        int updated = 0;
+
+        foreach (var element in model.AllElements)
+        {
+            if (selector.Matches(element, model))
+            {
+                var pset = element.GetOrCreatePropertySet(psetName);
+                var prop = pset.Properties.Find(p => p.Name.Equals(propName, StringComparison.OrdinalIgnoreCase));
+                if (prop is not null)
+                {
+                    prop.Value = value;
+                }
+                else
+                {
+                    pset.Add(propName, value);
+                }
+                updated++;
+            }
+        }
+
+        return updated;
     }
 }

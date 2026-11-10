@@ -2,6 +2,37 @@
 
 All notable changes to the `IfcIO` library are documented in this file.
 
+## [0.8.0] - 2026-11-10
+
+### Major Additions & Capabilities
+- **IfcOpenShell-Compatible 3D Geometric Clash Detection (`IfcClashDetector` / `IfcIO.Clash`)**:
+  - High-performance collision engine executing broad-phase AABB bounding box pruning and narrow-phase Möller triangle-to-triangle intersection testing in pure managed C#.
+  - Cross-model clash detection between contributing discipline models (e.g. Structure vs MEP) and intra-model self-clash detection.
+  - Configurable clearance and penetration tolerance, discipline filtering via `IfcSelector` queries, and storey/type exclusions.
+  - Direct export of clash reports to structured JSON (`report.SaveJson`) and buildingSMART BCF 2.1 zip archives (`report.SaveBcf`) with perspective camera framing and selected IFC GUIDs.
+  - Integrated into `IfcModel.DetectClashes(...)`.
+- **IfcOpenShell-Compatible Revision Diff & Comparison (`IfcDiffEngine` / `IfcIO.Diff`)**:
+  - Full semantic and geometric comparison between two IFC model revisions (baseline vs revision).
+  - Detects Added, Deleted, and Modified elements with detailed change sub-categorization:
+    - 3D Geometry changes: vertex differences, bounding box shifts, translation vectors.
+    - Property changes: added, removed, and modified property set parameters with old and new values.
+    - Quantity changes: delta in physical base quantities (lengths, areas, volumes).
+    - Spatial container re-assignments (moved between building storeys).
+    - Type changes: modified `IfcTypeProduct` definitions.
+  - Direct export of diff reports to structured JSON (`report.SaveJson`) and buildingSMART BCF 2.1 archives (`report.SaveBcf`).
+  - Integrated into `IfcModel.Compare(...)`.
+- **Standalone 3D WebGL HTML Viewer Export (`IfcHtmlViewerExporter` / `IfcIO.Exporters`)**:
+  - Direct export of any IFC model to a self-contained, interactive single-file 3D HTML application (`.html`) with zero external dependencies, CDNs, or server requirements.
+  - WebGL rendering with orbit camera controls (rotate, pan, zoom), mesh instancing, and material colors.
+  - Live fragment-shader section clipping planes (Cut X, Cut Y, Cut Z sliders).
+  - Spatial Tree Navigator (Storeys &rarr; Elements) with isolate / highlight.
+  - Property Inspector displaying full element identity, property sets, and physical quantities.
+  - Integrated into `IfcModel.SaveHtmlViewer(...)`.
+- **CLI Enhancements (`IfcIO.Cli`)**:
+  - `ifcio clash <modelA.ifc> [modelB.ifc] [-o <clashes.json>] [--bcf <clashes.bcfzip>] [--tolerance <meters>]`: run geometric clash detection.
+  - `ifcio diff <baseline.ifc> <revision.ifc> [-o <diff.json>] [--bcf <changes.bcfzip>] [--tolerance <meters>]`: compare two model revisions.
+  - `ifcio view <model.ifc> [-o <model.html>]`: export standalone 3D WebGL HTML viewer.
+
 ## [0.7.0] - 2026-11-10
 
 ### Major Additions & Capabilities

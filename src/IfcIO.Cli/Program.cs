@@ -40,6 +40,9 @@ public static class Program
                 "patch" => ExecutePatch(cmdArgs),
                 "export-csv" => ExecuteExportCsv(cmdArgs),
                 "import-csv" => ExecuteImportCsv(cmdArgs),
+                "clash" => ExecuteClash(cmdArgs),
+                "diff" => ExecuteDiff(cmdArgs),
+                "view" or "html" => ExecuteView(cmdArgs),
                 _ when File.Exists(args[0]) => ExecuteDefault(args),
                 _ => PrintUnknownCommand(command)
             };
@@ -70,6 +73,17 @@ Commands:
   patch <file> [opts]   Apply cleanup, coordinate reset, or extraction recipes to an IFC model
   export-csv <file> <out.csv> Export elements and properties to tabular CSV format
   import-csv <file> <in.csv> -o <out.ifc> Update property sets from a CSV spreadsheet
+  clash <fileA> [fileB] Run 3D geometric clash detection (cross-model or self-clash)
+  diff <baseline> <rev> Compare two IFC model revisions (added, deleted, modified)
+  view <file.ifc> [-o out.html] Export standalone 3D WebGL HTML viewer (.html)
+
+Clash & Diff Options:
+  --tolerance <meters>  Distance tolerance in meters (clash clearance or diff geometric threshold)
+  --bcf <path.bcfzip>   Export clash or diff issues directly to buildingSMART BCF 2.1 archive
+  --selector-a <query>  Filter Model A elements for clash detection (e.g. 'IfcWall, IfcColumn')
+  --selector-b <query>  Filter Model B elements for clash detection (e.g. 'IfcFlowSegment')
+  --filter <query>      Filter elements to compare in diff command
+  -o, --output <path>   Output JSON report or HTML viewer file path
 
 Patch Options:
   --purge               Remove empty/duplicate property sets, quantity sets, and empty storeys
@@ -836,6 +850,167 @@ Examples:
 
         Console.ForegroundColor = ConsoleColor.Green;
         Console.WriteLine($"Imported {props:N0} properties across {elems:N0} elements. Saved to '{outPath}' in {sw.ElapsedMilliseconds} ms.");
+        Console.ResetColor();
+        return 0;
+    }
+
+    private static int ExecuteClash(string[] args)
+    {
+        var nonOptions = args.Where(a => !a.StartsWith('-')).ToList();
+        if (nonOptions.Count == 0)
+        {
+            Console.Error.WriteLine("Error: clash command requires at least one input IFC file.");
+            return 1;
+        }
+
+        string fileA = nonOptions[0];
+        string? fileB = nonOptions.Count > 1 ? nonOptions[1] : null;
+
+        if (!File.Exists(fileA))
+        {
+            Console.Error.WriteLine($"Error: Input file '{fileA}' does not exist.");
+            return 1;
+        }
+        if (fileB is not null && !File.Exists(fileB))
+        {
+            Console.Error.WriteLine($"Error: Input file '{fileB}' does not exist.");
+            return 1;
+        }
+
+        double tol = 0.001;
+        string? tolStr = GetOptionValue(args, "--tolerance");
+        if (!string.IsNullOrEmpty(tolStr))
+        {
+            double.TryParse(tolStr, NumberStyles.Float, CultureInfo.InvariantCulture, out tol);
+        }
+
+        var options = new Clash.IfcClashOptions
+        {
+            Tolerance = tol,
+            SelectorA = GetOptionValue(args, "--selector-a"),
+            SelectorB = GetOptionValue(args, "--selector-b"),
+        };
+
+        var modelA = IfcModel.Open(fileA);
+        Clash.IfcClashReport report;
+        if (fileB is not null)
+        {
+            var modelB = IfcModel.Open(fileB);
+            report = modelA.DetectClashes(modelB, options);
+        }
+        else
+        {
+            report = modelA.DetectClashes(options);
+        }
+
+        Console.ForegroundColor = report.TotalClashesCount > 0 ? ConsoleColor.Yellow : ConsoleColor.Green;
+        Console.WriteLine($"Clash detection completed: {report.TotalClashesCount} clashes found in {report.Elapsed.TotalMilliseconds:F0} ms.");
+        Console.ResetColor();
+
+        string? outJson = GetOptionValue(args, "-o") ?? GetOptionValue(args, "--output");
+        if (!string.IsNullOrEmpty(outJson))
+        {
+            report.SaveJson(outJson);
+            Console.WriteLine($"Clash report saved to '{outJson}'.");
+        }
+
+        string? bcfPath = GetOptionValue(args, "--bcf");
+        if (!string.IsNullOrEmpty(bcfPath))
+        {
+            report.SaveBcf(bcfPath);
+            Console.WriteLine($"BCF 2.1 clash archive saved to '{bcfPath}'.");
+        }
+
+        return 0;
+    }
+
+    private static int ExecuteDiff(string[] args)
+    {
+        var nonOptions = args.Where(a => !a.StartsWith('-')).ToList();
+        if (nonOptions.Count < 2)
+        {
+            Console.Error.WriteLine("Error: diff command requires baseline and revision IFC files: 'ifcio diff <baseline.ifc> <revision.ifc>'.");
+            return 1;
+        }
+
+        string baselineFile = nonOptions[0];
+        string revisionFile = nonOptions[1];
+
+        if (!File.Exists(baselineFile))
+        {
+            Console.Error.WriteLine($"Error: Baseline file '{baselineFile}' does not exist.");
+            return 1;
+        }
+        if (!File.Exists(revisionFile))
+        {
+            Console.Error.WriteLine($"Error: Revision file '{revisionFile}' does not exist.");
+            return 1;
+        }
+
+        double tol = 0.005;
+        string? tolStr = GetOptionValue(args, "--tolerance");
+        if (!string.IsNullOrEmpty(tolStr))
+        {
+            double.TryParse(tolStr, NumberStyles.Float, CultureInfo.InvariantCulture, out tol);
+        }
+
+        var options = new Diff.IfcDiffOptions
+        {
+            GeometricTolerance = tol,
+            FilterSelector = GetOptionValue(args, "--filter"),
+        };
+
+        var baselineModel = IfcModel.Open(baselineFile);
+        var revisionModel = IfcModel.Open(revisionFile);
+        var report = baselineModel.Compare(revisionModel, options);
+
+        Console.ForegroundColor = report.TotalChangesCount > 0 ? ConsoleColor.Cyan : ConsoleColor.Green;
+        Console.WriteLine($"Diff completed in {report.Elapsed.TotalMilliseconds:F0} ms: {report.TotalChangesCount} changes (Added: {report.Added.Count}, Deleted: {report.Deleted.Count}, Modified: {report.Modified.Count}, Unchanged: {report.Unchanged.Count}).");
+        Console.ResetColor();
+
+        string? outJson = GetOptionValue(args, "-o") ?? GetOptionValue(args, "--output");
+        if (!string.IsNullOrEmpty(outJson))
+        {
+            report.SaveJson(outJson);
+            Console.WriteLine($"Diff report saved to '{outJson}'.");
+        }
+
+        string? bcfPath = GetOptionValue(args, "--bcf");
+        if (!string.IsNullOrEmpty(bcfPath))
+        {
+            report.SaveBcf(bcfPath);
+            Console.WriteLine($"BCF 2.1 revision archive saved to '{bcfPath}'.");
+        }
+
+        return 0;
+    }
+
+    private static int ExecuteView(string[] args)
+    {
+        var nonOptions = args.Where(a => !a.StartsWith('-')).ToList();
+        if (nonOptions.Count == 0)
+        {
+            Console.Error.WriteLine("Error: view command requires an input IFC file.");
+            return 1;
+        }
+
+        string inputPath = nonOptions[0];
+        if (!File.Exists(inputPath))
+        {
+            Console.Error.WriteLine($"Error: Input file '{inputPath}' does not exist.");
+            return 1;
+        }
+
+        string outPath = GetOptionValue(args, "-o") ?? GetOptionValue(args, "--output") ?? Path.ChangeExtension(inputPath, ".html");
+        string title = GetOptionValue(args, "--title") ?? Path.GetFileNameWithoutExtension(inputPath);
+
+        var sw = Stopwatch.StartNew();
+        var model = IfcModel.Open(inputPath);
+        model.SaveHtmlViewer(outPath, new Exporters.IfcHtmlViewerOptions { Title = title });
+        sw.Stop();
+
+        Console.ForegroundColor = ConsoleColor.Green;
+        Console.WriteLine($"3D WebGL HTML viewer exported to '{outPath}' in {sw.ElapsedMilliseconds} ms.");
         Console.ResetColor();
         return 0;
     }

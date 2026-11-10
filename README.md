@@ -4,6 +4,12 @@
 
 # IfcIO
 
+[![Docs](https://img.shields.io/badge/Docs-Online-A855F7?style=flat-square&logo=github)](https://ioextend.github.io/IfcIO/)
+[![NuGet](https://img.shields.io/nuget/v/IfcIO?style=flat-square&color=A855F7&logo=nuget)](https://www.nuget.org/packages/IfcIO)
+[![Release](https://img.shields.io/github/v/release/IOExtend/IfcIO?style=flat-square&color=A855F7)](https://github.com/IOExtend/IfcIO/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](https://opensource.org/licenses/MIT)
+[![Platform](https://img.shields.io/badge/.NET-8.0%20%7C%2010.0-512BD4?style=flat-square&logo=dotnet)](https://dotnet.microsoft.com/)
+
 **IfcIO** is a fast, 100% managed .NET library for building, reading, and exporting **Industry Foundation Classes** (`.ifc`) files compliant with **IFC2x3 Coordination View V2.0** and **IFC4 Design Transfer / Reference View** without third-party dependencies or native code.
 
 Built clean-room under the [IOExtend](https://github.com/IOExtend) organization as the shared open-standards IFC foundation for AEC/BIM projects (including [NwcIO](https://github.com/IOExtend/NwcIO) and [RvtIO](https://github.com/IOExtend/RvtIO)).
@@ -518,6 +524,12 @@ ifcio view Building.ifc -o BuildingViewer.html --grids Grids.xml
 # Validate ISO 10303-21 structure and export BCF 2.1 issues for coordination
 ifcio validate Building.ifc --bcf Issues.bcfzip
 ```
+
+---
+
+## Documentation
+
+The documentation site with API references, schema guides, and CLI usage is available at <https://ioextend.github.io/IfcIO/>. [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/IOExtend/IfcIO) offers an automatically generated overview of the repository.
 
 ---
 

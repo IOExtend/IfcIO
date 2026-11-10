@@ -131,6 +131,21 @@ paramWall.PropertySets.Add(StandardPsets.WallCommon(
     fireRating: "REI 120",
     thermalTransmittance: 0.28));
 
+// Add parametric revolved solids (curved pipes, fittings, flanged connections)
+var pipeProfile = new IfcCircleProfileDef(radius: 100.0, position: new IfcVector3(500, 0, 0));
+model.AddRevolvedSolid("90DegElbow", pipeProfile, angle: Math.PI * 0.5, storey: floor1, ifcType: "IFCPIPEFITTING");
+
+// Automatic buildingSMART Quantity Takeoff (QTO) calculation directly from 3D geometry
+model.CalculateAllBaseQuantities();
+
+// Attach explicit custom quantity sets
+paramWall.QuantitySets.Add(StandardQtoSets.WallBaseQuantities(
+    length: 6000.0,
+    width: 300.0,
+    height: 3000.0,
+    grossVolume: 5.4,
+    netVolume: 4.8));
+
 // Validate model integrity
 var validation = model.Validate();
 if (!validation.IsValid)

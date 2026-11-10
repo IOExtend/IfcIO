@@ -162,6 +162,10 @@ public static class IfcValidator
             {
                 ValidateSolid(element.Solid, elemDesc, issues);
             }
+            else if (element.RevolvedSolid is not null)
+            {
+                ValidateRevolvedSolid(element.RevolvedSolid, elemDesc, issues);
+            }
 
             // Openings validation
             if (element.Openings.Count > 0)
@@ -183,6 +187,9 @@ public static class IfcValidator
 
             // Property set validation
             ValidatePropertySets(element.PropertySets, elemDesc, issues);
+
+            // Quantity set validation
+            ValidateQuantitySets(element.QuantitySets, elemDesc, issues);
         }
 
         // 5. Type Products
@@ -211,17 +218,49 @@ public static class IfcValidator
             });
         }
 
-        if (solid.Profile is null)
+        ValidateProfile(solid.Profile, entityName, issues);
+    }
+
+    private static void ValidateRevolvedSolid(IfcRevolvedAreaSolid solid, string entityName, List<IfcValidationIssue> issues)
+    {
+        if (solid.Angle <= 0 || !double.IsFinite(solid.Angle) || solid.Angle > 2.0 * Math.PI + 1e-4)
+        {
+            issues.Add(new IfcValidationIssue
+            {
+                RuleId = "IFC_REVOLVED_ANGLE",
+                Severity = IfcIssueSeverity.Error,
+                Message = $"Revolved solid angle must be in range (0, 2pi] (actual: {solid.Angle}).",
+                EntityName = entityName
+            });
+        }
+
+        if (solid.Axis.Axis.Length < 1e-6)
+        {
+            issues.Add(new IfcValidationIssue
+            {
+                RuleId = "IFC_REVOLVED_AXIS",
+                Severity = IfcIssueSeverity.Error,
+                Message = "Revolved solid axis direction must not be zero vector.",
+                EntityName = entityName
+            });
+        }
+
+        ValidateProfile(solid.Profile, entityName, issues);
+    }
+
+    private static void ValidateProfile(IfcProfileDef? profile, string entityName, List<IfcValidationIssue> issues)
+    {
+        if (profile is null)
         {
             issues.Add(new IfcValidationIssue
             {
                 RuleId = "IFC_SOLID_PROFILE",
                 Severity = IfcIssueSeverity.Error,
-                Message = "Extruded solid has null profile.",
+                Message = "Solid has null profile.",
                 EntityName = entityName
             });
         }
-        else if (solid.Profile is IfcRectangleProfileDef rect)
+        else if (profile is IfcRectangleProfileDef rect)
         {
             if (rect.XDim <= 0 || !double.IsFinite(rect.XDim) || rect.YDim <= 0 || !double.IsFinite(rect.YDim))
             {
@@ -234,7 +273,7 @@ public static class IfcValidator
                 });
             }
         }
-        else if (solid.Profile is IfcCircleProfileDef circ)
+        else if (profile is IfcCircleProfileDef circ)
         {
             if (circ.Radius <= 0 || !double.IsFinite(circ.Radius))
             {
@@ -245,6 +284,59 @@ public static class IfcValidator
                     Message = $"Circle profile radius must be a positive finite number (actual: {circ.Radius}).",
                     EntityName = entityName
                 });
+            }
+        }
+    }
+
+    private static void ValidateQuantitySets(List<IfcQuantitySet> qsets, string entityName, List<IfcValidationIssue> issues)
+    {
+        foreach (var qset in qsets)
+        {
+            string qsetDesc = $"QuantitySet '{qset.Name}' in {entityName}";
+            if (string.IsNullOrWhiteSpace(qset.Name))
+            {
+                issues.Add(new IfcValidationIssue
+                {
+                    RuleId = "IFC_QUANTITY_NAME",
+                    Severity = IfcIssueSeverity.Error,
+                    Message = "Quantity set name must not be whitespace.",
+                    EntityName = entityName
+                });
+            }
+
+            foreach (var q in qset.Quantities)
+            {
+                if (string.IsNullOrWhiteSpace(q.Name))
+                {
+                    issues.Add(new IfcValidationIssue
+                    {
+                        RuleId = "IFC_QUANTITY_NAME",
+                        Severity = IfcIssueSeverity.Error,
+                        Message = $"Physical quantity in {qsetDesc} has null or whitespace name.",
+                        EntityName = entityName
+                    });
+                }
+
+                double val = q switch
+                {
+                    IfcQuantityLength ql => ql.LengthValue,
+                    IfcQuantityArea qa => qa.AreaValue,
+                    IfcQuantityVolume qv => qv.VolumeValue,
+                    IfcQuantityCount qc => qc.CountValue,
+                    IfcQuantityWeight qw => qw.WeightValue,
+                    _ => 0.0,
+                };
+
+                if (val < 0 || !double.IsFinite(val))
+                {
+                    issues.Add(new IfcValidationIssue
+                    {
+                        RuleId = "IFC_QUANTITY_POSITIVE",
+                        Severity = IfcIssueSeverity.Error,
+                        Message = $"Physical quantity '{q.Name}' value must be non-negative finite number (actual: {val}).",
+                        EntityName = qsetDesc
+                    });
+                }
             }
         }
     }

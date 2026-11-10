@@ -2,6 +2,30 @@
 
 All notable changes to the `IfcIO` library are documented in this file.
 
+## [0.4.0] - 2026-11-10
+
+### Major Additions & Capabilities
+- **Base Quantities & Quantity Takeoff Sets (`IfcQuantitySet` / `IFCELEMENTQUANTITY`)**:
+  - Strongly-typed model hierarchy for buildingSMART physical simple quantities: `IfcQuantityLength`, `IfcQuantityArea`, `IfcQuantityVolume`, `IfcQuantityCount`, `IfcQuantityWeight`.
+  - Standard buildingSMART Quantity Takeoff builders (`StandardQtoSets`):
+    - `WallBaseQuantities` / `Qto_WallBaseQuantities` (Length, Width, Height, GrossFootprintArea, NetSideArea, GrossVolume, NetVolume).
+    - `SlabBaseQuantities` / `Qto_SlabBaseQuantities` (Width, Length, Depth, Perimeter, GrossArea, NetArea, GrossVolume, NetVolume).
+    - `ColumnBaseQuantities` / `Qto_ColumnBaseQuantities` (Length, CrossSectionArea, OuterSurfaceArea, TotalSurfaceArea, GrossVolume, NetVolume).
+    - `BeamBaseQuantities` / `Qto_BeamBaseQuantities` (Length, CrossSectionArea, OuterSurfaceArea, GrossVolume, NetVolume).
+    - `WindowBaseQuantities` / `Qto_WindowBaseQuantities`, `DoorBaseQuantities` / `Qto_DoorBaseQuantities`.
+  - Automatic geometric quantity calculation engine (`IfcQuantityCalculator`): exact enclosed mesh volume via tetrahedral divergence theorem, total face surface area, cross-section area, profile perimeter, footprint area, and automatic deduction of openings for net volumes.
+  - Model-level helper `model.CalculateAllBaseQuantities()` to calculate and attach standard buildingSMART Qto sets across all elements in the entire model.
+  - Full ISO 10303-21 STEP physical file serialization (`IFCELEMENTQUANTITY`, `IFCQUANTITYLENGTH`, `IFCQUANTITYAREA`, `IFCQUANTITYVOLUME`, `IFCQUANTITYCOUNT`, `IFCQUANTITYWEIGHT`) linked via `IFCRELDEFINESBYPROPERTIES` and deserialization.
+- **Parametric Revolved Swept Solids (`IfcRevolvedAreaSolid`)**:
+  - Revolves 2D cross-section profiles (`IfcRectangleProfileDef`, `IfcCircleProfileDef`, `IfcArbitraryClosedProfileDef`) around an axis line (`IfcAxis1Placement`) by a revolution angle $\theta \in (0, 2\pi]$.
+  - Automatic on-demand mesh generation (`solid.ToMesh()`) supporting full revolutions ($2\pi$) and partial revolutions with end caps.
+  - Model-level helper `model.AddRevolvedSolid(...)`.
+  - Full serialization and deserialization of `IFCREVOLVEDAREASOLID` and `IFCAXIS1PLACEMENT`.
+- **Model Validation Enhancements (`IfcValidator`)**:
+  - Added rule `IFC_QUANTITY_POSITIVE`: verifies that length, area, volume, count, and weight values are non-negative and finite numbers.
+  - Added rule `IFC_QUANTITY_NAME`: validates non-whitespace quantity and quantity set names.
+  - Added rule `IFC_REVOLVED_ANGLE`: validates that revolution angle is finite and in $(0, 2\pi]$.
+
 ## [0.3.0] - 2026-11-10
 
 ### Major Additions & Capabilities

@@ -70,6 +70,17 @@ public abstract class IfcPhysicalQuantity
 {
     public string Name { get; set; } = string.Empty;
     public string? Description { get; set; }
+
+    /// <summary>Gets the numeric magnitude of this physical simple quantity.</summary>
+    public double Value => this switch
+    {
+        IfcQuantityLength l => l.LengthValue,
+        IfcQuantityArea a => a.AreaValue,
+        IfcQuantityVolume v => v.VolumeValue,
+        IfcQuantityCount c => c.CountValue,
+        IfcQuantityWeight w => w.WeightValue,
+        _ => 0.0,
+    };
 }
 
 /// <summary>

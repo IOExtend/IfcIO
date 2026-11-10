@@ -698,6 +698,22 @@ public sealed class IfcModel
     /// <summary>Exports the model to Wavefront OBJ format (.obj + .mtl).</summary>
     public void SaveObj(string path) => IfcObjExporter.Save(this, path);
 
+    /// <summary>Performs geometric clash detection between this model and another IFC model.</summary>
+    public Clash.IfcClashReport DetectClashes(IfcModel otherModel, Clash.IfcClashOptions? options = null) =>
+        Clash.IfcClashDetector.DetectClashes(this, otherModel, options);
+
+    /// <summary>Performs geometric self-clash detection within this IFC model.</summary>
+    public Clash.IfcClashReport DetectClashes(Clash.IfcClashOptions? options = null) =>
+        Clash.IfcClashDetector.DetectClashes(this, options);
+
+    /// <summary>Compares this baseline model against a revision model, detecting added, deleted, and modified elements.</summary>
+    public Diff.IfcDiffReport Compare(IfcModel revisionModel, Diff.IfcDiffOptions? options = null) =>
+        Diff.IfcDiffEngine.Compare(this, revisionModel, options);
+
+    /// <summary>Exports the model to a standalone, interactive 3D WebGL HTML viewer (.html) with zero dependencies.</summary>
+    public void SaveHtmlViewer(string path, Exporters.IfcHtmlViewerOptions? options = null) =>
+        Exporters.IfcHtmlViewerExporter.Save(path, this, options);
+
     /// <summary>Serializes the IFC model to an ISO 10303-21 STEP physical string.</summary>
     public string ToStepString(string fileName = "model.ifc")
     {

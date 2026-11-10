@@ -59,6 +59,12 @@ Built clean-room under the [IOExtend](https://github.com/IOExtend) organization 
   - Audits models against Information Delivery Specification (`.ids`) XML files and exports violations to BCF 2.1 archives (`.bcfzip`).
 - **Tabular Property CSV Roundtrip Bridge (`IfcCsvBridge`)**:
   - Fast CSV spreadsheet export and bulk property import conforming to `ifccsv`.
+- **3D Geometric Clash Detection (`IfcClashDetector`)**:
+  - Pure managed collision engine executing broad-phase bounding box pruning and narrow-phase Möller triangle-to-triangle intersection testing for cross-model (Structure vs MEP) and intra-model interference analysis conforming to `ifcclash`. Direct export to structured JSON and buildingSMART BCF 2.1 zip archives.
+- **Semantic & Geometric Revision Comparison (`IfcDiffEngine`)**:
+  - Full revision comparison between two IFC models detecting added, deleted, and modified elements (3D geometry displacement, property set deltas, quantity variations, and storey re-assignments) conforming to `ifcdiff`. Direct export to JSON and BCF 2.1 archives.
+- **Standalone 3D WebGL HTML Viewer (`IfcHtmlViewerExporter`)**:
+  - Export any IFC model to an interactive, self-contained single-file 3D HTML viewer (`.html`) with zero external scripts, CDNs, or server dependencies. Includes orbit camera controls, live multi-axis section clipping planes (Cut X, Cut Y, Cut Z), spatial tree navigation, and element property inspector.
 - **Zero Dependencies**: Pure C# targeting `.NET 8` and `.NET 10`.
 
 ---
@@ -285,6 +291,69 @@ var (elementsUpdated, propertiesUpdated) = model.ImportCsv("Schedules_Edited.csv
 model.Save("Building_Updated.ifc");
 ```
 
+### 3D Geometric Clash Detection (`IfcClashDetector`)
+
+```csharp
+using IfcIO.Clash;
+
+// Run cross-model clash detection between architectural and MEP models
+var clashReport = archModel.DetectClashes(mepModel, new IfcClashOptions
+{
+    Tolerance = 0.002, // 2mm penetration tolerance
+    SelectorA = "IfcWall, IfcColumn, IfcBeam",
+    SelectorB = "IfcFlowSegment, IfcFlowFitting",
+});
+
+Console.WriteLine($"Detected {clashReport.TotalClashesCount} clashes.");
+
+// Save detailed JSON report
+clashReport.SaveJson("Clashes.json");
+
+// Export directly to buildingSMART BCF 2.1 zip archive for Revit / Solibri / BIMcollab
+clashReport.SaveBcf("Clashes.bcfzip");
+```
+
+### Semantic & Geometric Revision Diff (`IfcDiffEngine`)
+
+```csharp
+using IfcIO.Diff;
+
+// Compare baseline model against revision
+var diffReport = baselineModel.Compare(revisionModel, new IfcDiffOptions
+{
+    GeometricTolerance = 0.005, // 5mm displacement threshold
+    CompareProperties = true,
+    CompareQuantities = true,
+});
+
+Console.WriteLine($"Total Changes: {diffReport.TotalChangesCount}");
+Console.WriteLine($" - Added:    {diffReport.Added.Count}");
+Console.WriteLine($" - Deleted:  {diffReport.Deleted.Count}");
+Console.WriteLine($" - Modified: {diffReport.Modified.Count}");
+
+// Export diff report to JSON
+diffReport.SaveJson("ModelDiff.json");
+
+// Export changes to BCF 2.1 with camera viewpoints framing each modified element
+diffReport.SaveBcf("RevisionChanges.bcfzip");
+```
+
+### Standalone 3D WebGL HTML Viewer Export
+
+```csharp
+using IfcIO.Exporters;
+
+// Export IFC model to an interactive, zero-dependency 3D HTML viewer
+model.SaveHtmlViewer("BuildingModel.html", new IfcHtmlViewerOptions
+{
+    Title = "Residential Complex - Coordination Viewer",
+    IncludeProperties = true,
+    IncludeQuantities = true,
+    IncludeSpatialTree = true,
+    IncludeSectioning = true,
+});
+```
+
 ---
 
 ## Global CLI Tool (`ifcio`)
@@ -324,6 +393,15 @@ ifcio pack Building.ifc -o Building.ifczip
 
 # Extract IFC from .ifczip
 ifcio unpack Building.ifczip -o Building.ifc
+
+# Run 3D geometric clash detection between models (or within one model)
+ifcio clash Arch.ifc Mep.ifc -o Clashes.json --bcf Clashes.bcfzip --tolerance 0.002
+
+# Compare two IFC model revisions (added, deleted, modified)
+ifcio diff Baseline.ifc Revision.ifc -o Changes.json --bcf RevisionChanges.bcfzip
+
+# Export standalone 3D WebGL HTML viewer (.html) with zero dependencies
+ifcio view Building.ifc -o BuildingViewer.html
 
 # Validate ISO 10303-21 structure and export BCF 2.1 issues for coordination
 ifcio validate Building.ifc --bcf Issues.bcfzip

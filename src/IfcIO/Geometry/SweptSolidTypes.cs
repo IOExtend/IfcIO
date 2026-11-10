@@ -210,9 +210,9 @@ public sealed class IfcExtrudedAreaSolid
         return IfcMesh.Create(0, meshName, vertices, indices);
     }
 
-    private readonly record struct Vector2D(double X, double Y);
+    internal readonly record struct Vector2D(double X, double Y);
 
-    private static List<int> TriangulatePolygon(IReadOnlyList<Vector2D> poly)
+    internal static List<int> TriangulatePolygon(IReadOnlyList<Vector2D> poly)
     {
         int n = poly.Count;
         var result = new List<int>((n - 2) * 3);
@@ -333,5 +333,144 @@ public sealed class IfcExtrudedAreaSolid
     private static double Sign(Vector2D p1, Vector2D p2, Vector2D p3)
     {
         return (p1.X - p3.X) * (p2.Y - p3.Y) - (p2.X - p3.X) * (p1.Y - p3.Y);
+    }
+}
+
+/// <summary>
+/// Defines the location and orientation of an axis in 3D space, conforming to buildingSMART IFCAXIS1PLACEMENT.
+/// </summary>
+public sealed class IfcAxis1Placement
+{
+    public IfcVector3 Location { get; set; } = IfcVector3.Zero;
+    public IfcVector3 Axis { get; set; } = IfcVector3.UnitZ;
+
+    public IfcAxis1Placement() { }
+
+    public IfcAxis1Placement(IfcVector3 location, IfcVector3 axis)
+    {
+        Location = location;
+        Axis = axis;
+    }
+}
+
+/// <summary>
+/// A 3D solid geometry created by revolving a 2D cross-section profile around an axis line by a given angle.
+/// Conforms to buildingSMART IFC standard IFCREVOLVEDAREASOLID.
+/// </summary>
+public sealed class IfcRevolvedAreaSolid
+{
+    public IfcProfileDef Profile { get; set; }
+    public IfcVector3 Position { get; set; } = IfcVector3.Zero;
+    public IfcAxis1Placement Axis { get; set; } = new();
+    public double Angle { get; set; } = 2.0 * Math.PI;
+
+    public IfcRevolvedAreaSolid(IfcProfileDef profile, double angle = 2.0 * Math.PI, IfcVector3? position = null, IfcAxis1Placement? axis = null)
+    {
+        Profile = profile ?? throw new ArgumentNullException(nameof(profile));
+        Angle = angle;
+        Position = position ?? IfcVector3.Zero;
+        Axis = axis ?? new IfcAxis1Placement();
+    }
+
+    /// <summary>
+    /// Converts the revolved swept solid into a triangulated 3D polygon mesh.
+    /// </summary>
+    public IfcMesh ToMesh(int profileSegments = 16, int radialSegments = 24, string meshName = "RevolvedSolid")
+    {
+        var boundary2D = Profile.GetBoundaryPoints(profileSegments);
+        int n = boundary2D.Count;
+        if (n < 3)
+        {
+            return IfcMesh.Create(0, meshName, Array.Empty<IfcVector3>(), Array.Empty<int>());
+        }
+
+        int m = Math.Max(3, radialSegments);
+        bool isFullRevolution = Math.Abs(Angle - 2.0 * Math.PI) < 1e-4;
+        int ringCount = isFullRevolution ? m : m + 1;
+        double angleStep = Angle / m;
+
+        // Axis line
+        var axisDir = Axis.Axis.Normalized();
+        if (axisDir.Length < 1e-6) axisDir = IfcVector3.UnitZ;
+        var axisLoc = Axis.Location;
+
+        var basePoints = new List<IfcVector3>(n);
+        for (int i = 0; i < n; i++)
+        {
+            var p = boundary2D[i];
+            basePoints.Add(Position + new IfcVector3(p.X, p.Y, 0));
+        }
+
+        var vertices = new List<IfcVector3>(ringCount * n);
+        var indices = new List<int>();
+
+        // Generate rotated rings
+        for (int j = 0; j < ringCount; j++)
+        {
+            double theta = j * angleStep;
+            double cosT = Math.Cos(theta);
+            double sinT = Math.Sin(theta);
+
+            for (int i = 0; i < n; i++)
+            {
+                var pt = basePoints[i];
+                var r = pt - axisLoc;
+                // Rodrigues' rotation formula
+                var rRot = (r * cosT) + (IfcVector3.Cross(axisDir, r) * sinT) + (axisDir * IfcVector3.Dot(axisDir, r) * (1.0 - cosT));
+                vertices.Add(axisLoc + rRot);
+            }
+        }
+
+        // Connect rings with quad faces
+        for (int j = 0; j < m; j++)
+        {
+            int nextJ = isFullRevolution ? (j + 1) % m : j + 1;
+            int ringOffsetA = j * n;
+            int ringOffsetB = nextJ * n;
+
+            for (int i = 0; i < n; i++)
+            {
+                int nextI = (i + 1) % n;
+
+                int a0 = ringOffsetA + i;
+                int a1 = ringOffsetA + nextI;
+                int b0 = ringOffsetB + i;
+                int b1 = ringOffsetB + nextI;
+
+                indices.Add(a0);
+                indices.Add(a1);
+                indices.Add(b1);
+
+                indices.Add(a0);
+                indices.Add(b1);
+                indices.Add(b0);
+            }
+        }
+
+        // If not full revolution, add end caps at j = 0 and j = m
+        if (!isFullRevolution)
+        {
+            var poly2D = boundary2D.Select(p => new IfcExtrudedAreaSolid.Vector2D(p.X, p.Y)).ToList();
+            var capTris = IfcExtrudedAreaSolid.TriangulatePolygon(poly2D);
+
+            // Start cap at ring 0 (facing backwards)
+            for (int k = 0; k < capTris.Count; k += 3)
+            {
+                indices.Add(capTris[k]);
+                indices.Add(capTris[k + 2]);
+                indices.Add(capTris[k + 1]);
+            }
+
+            // End cap at ring m (facing forwards)
+            int lastRingOffset = m * n;
+            for (int k = 0; k < capTris.Count; k += 3)
+            {
+                indices.Add(lastRingOffset + capTris[k]);
+                indices.Add(lastRingOffset + capTris[k + 1]);
+                indices.Add(lastRingOffset + capTris[k + 2]);
+            }
+        }
+
+        return IfcMesh.Create(0, meshName, vertices, indices);
     }
 }

@@ -187,6 +187,61 @@ public sealed class IfcModel
         return element;
     }
 
+    /// <summary>Creates and adds an element with a parametric revolved swept solid.</summary>
+    public IfcElement AddRevolvedSolid(
+        string name,
+        IfcProfileDef profile,
+        double angle = 2.0 * Math.PI,
+        IfcVector3? position = null,
+        IfcAxis1Placement? axis = null,
+        IfcMaterial? material = null,
+        IfcBuildingStorey? storey = null,
+        string? ifcType = null)
+    {
+        storey ??= Storeys[0];
+        int nextId = storey.Elements.Count + 1;
+        var solid = new IfcRevolvedAreaSolid(profile, angle, position, axis);
+
+        var element = new IfcElement
+        {
+            Id = nextId,
+            Name = name,
+            IfcType = ifcType ?? ClassifyElement(name, material?.Name),
+            RevolvedSolid = solid,
+            Material = material,
+        };
+
+        if (material is not null && !Materials.Contains(material))
+        {
+            Materials.Add(material);
+        }
+
+        storey.Elements.Add(element);
+        return element;
+    }
+
+    /// <summary>
+    /// Computes buildingSMART standard Base Quantities (QTO) for all elements in the model based on their 3D geometry.
+    /// </summary>
+    /// <param name="overwriteExisting">Whether to replace existing Qto_* sets if already present.</param>
+    public void CalculateAllBaseQuantities(bool overwriteExisting = false)
+    {
+        foreach (var element in AllElements)
+        {
+            if (!overwriteExisting && element.QuantitySets.Any(q => q.Name.StartsWith("Qto_", StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            var baseQto = IfcQuantityCalculator.CalculateBaseQuantities(element);
+            if (overwriteExisting)
+            {
+                element.QuantitySets.RemoveAll(q => q.Name.Equals(baseQto.Name, StringComparison.OrdinalIgnoreCase));
+            }
+            element.QuantitySets.Add(baseQto);
+        }
+    }
+
     /// <summary>
     /// Adds an opening / void element to a host building element (e.g. wall cutout for window/door).
     /// </summary>
@@ -453,6 +508,42 @@ public sealed class IfcModel
                             $"{StepWriter.Str(IfcGuid.NewGuid())},{StepWriter.Ref(ownerHistoryId)},$,$,({StepWriter.Ref(elemId)}),{StepWriter.Ref(psetId)}");
                     }
                 }
+
+                // Quantity sets
+                if (element.QuantitySets.Count > 0)
+                {
+                    foreach (var qset in element.QuantitySets)
+                    {
+                        var qIds = new List<int>();
+                        foreach (var q in qset.Quantities)
+                        {
+                            int qId = q switch
+                            {
+                                IfcQuantityLength ql => w.Add("IFCQUANTITYLENGTH",
+                                    $"{StepWriter.Str(ql.Name)},{StepWriter.Str(ql.Description)},$,{StepWriter.Real(ql.LengthValue)}"),
+                                IfcQuantityArea qa => w.Add("IFCQUANTITYAREA",
+                                    $"{StepWriter.Str(qa.Name)},{StepWriter.Str(qa.Description)},$,{StepWriter.Real(qa.AreaValue)}"),
+                                IfcQuantityVolume qv => w.Add("IFCQUANTITYVOLUME",
+                                    $"{StepWriter.Str(qv.Name)},{StepWriter.Str(qv.Description)},$,{StepWriter.Real(qv.VolumeValue)}"),
+                                IfcQuantityCount qc => w.Add("IFCQUANTITYCOUNT",
+                                    $"{StepWriter.Str(qc.Name)},{StepWriter.Str(qc.Description)},$,{StepWriter.Real(qc.CountValue)}"),
+                                IfcQuantityWeight qw => w.Add("IFCQUANTITYWEIGHT",
+                                    $"{StepWriter.Str(qw.Name)},{StepWriter.Str(qw.Description)},$,{StepWriter.Real(qw.WeightValue)}"),
+                                _ => -1,
+                            };
+                            if (qId > 0) qIds.Add(qId);
+                        }
+
+                        if (qIds.Count > 0)
+                        {
+                            int qsetId = w.Add("IFCELEMENTQUANTITY",
+                                $"{StepWriter.Str(IfcGuid.NewGuid())},{StepWriter.Ref(ownerHistoryId)},{StepWriter.Str(qset.Name)},{StepWriter.Str(qset.Description)},{StepWriter.Str(qset.MethodOfMeasurement)},{StepWriter.List(qIds.Select(StepWriter.Ref))}");
+
+                            w.Add("IFCRELDEFINESBYPROPERTIES",
+                                $"{StepWriter.Str(IfcGuid.NewGuid())},{StepWriter.Ref(ownerHistoryId)},$,$,({StepWriter.Ref(elemId)}),{StepWriter.Ref(qsetId)}");
+                        }
+                    }
+                }
             }
 
             if (storeyElementIds.Count > 0)
@@ -612,7 +703,7 @@ public sealed class IfcModel
             }
         }
 
-        // 5. Parse Property Sets
+        // 5. Parse Property Sets and Quantity Sets
         var psetMap = new Dictionary<int, IfcPropertySet>();
         foreach (var psetEnt in step.OfType("IFCPROPERTYSET"))
         {
@@ -634,13 +725,59 @@ public sealed class IfcModel
             psetMap[psetEnt.Id] = pset;
         }
 
+        var qsetMap = new Dictionary<int, IfcQuantitySet>();
+        foreach (var qsetEnt in step.OfType("IFCELEMENTQUANTITY"))
+        {
+            string qsetName = qsetEnt.GetString(2) ?? "BaseQuantities";
+            string? desc = qsetEnt.GetString(3);
+            string? method = qsetEnt.GetString(4);
+            var qset = new IfcQuantitySet(qsetName, desc, method);
+            var qIds = qsetEnt.GetRefList(5);
+
+            foreach (int qId in qIds)
+            {
+                var qEnt = step.Find(qId);
+                if (qEnt is null) continue;
+
+                string qName = qEnt.GetString(0) ?? "Quantity";
+                string? qDesc = qEnt.GetString(1);
+                double val = qEnt.GetReal(3) ?? 0.0;
+
+                if (qEnt.Type.Equals("IFCQUANTITYLENGTH", StringComparison.OrdinalIgnoreCase))
+                {
+                    qset.AddLength(qName, val, qDesc);
+                }
+                else if (qEnt.Type.Equals("IFCQUANTITYAREA", StringComparison.OrdinalIgnoreCase))
+                {
+                    qset.AddArea(qName, val, qDesc);
+                }
+                else if (qEnt.Type.Equals("IFCQUANTITYVOLUME", StringComparison.OrdinalIgnoreCase))
+                {
+                    qset.AddVolume(qName, val, qDesc);
+                }
+                else if (qEnt.Type.Equals("IFCQUANTITYCOUNT", StringComparison.OrdinalIgnoreCase))
+                {
+                    qset.AddCount(qName, val, qDesc);
+                }
+                else if (qEnt.Type.Equals("IFCQUANTITYWEIGHT", StringComparison.OrdinalIgnoreCase))
+                {
+                    qset.AddWeight(qName, val, qDesc);
+                }
+            }
+            qsetMap[qsetEnt.Id] = qset;
+        }
+
         var elementPropertySets = new Dictionary<int, List<IfcPropertySet>>();
+        var elementQuantitySets = new Dictionary<int, List<IfcQuantitySet>>();
         foreach (var relProps in step.OfType("IFCRELDEFINESBYPROPERTIES"))
         {
-            int? psetId = relProps.GetRef(5);
-            if (psetId.HasValue && psetMap.TryGetValue(psetId.Value, out var pset))
+            int? propDefId = relProps.GetRef(5);
+            if (!propDefId.HasValue) continue;
+
+            var elemIds = relProps.GetRefList(4);
+
+            if (psetMap.TryGetValue(propDefId.Value, out var pset))
             {
-                var elemIds = relProps.GetRefList(4);
                 foreach (int eId in elemIds)
                 {
                     if (!elementPropertySets.TryGetValue(eId, out var list))
@@ -649,6 +786,18 @@ public sealed class IfcModel
                         elementPropertySets[eId] = list;
                     }
                     list.Add(pset);
+                }
+            }
+            else if (qsetMap.TryGetValue(propDefId.Value, out var qset))
+            {
+                foreach (int eId in elemIds)
+                {
+                    if (!elementQuantitySets.TryGetValue(eId, out var qlist))
+                    {
+                        qlist = [];
+                        elementQuantitySets[eId] = qlist;
+                    }
+                    qlist.Add(qset);
                 }
             }
         }
@@ -687,17 +836,21 @@ public sealed class IfcModel
                     Tag = tag,
                 };
 
-            // Link property sets
+            // Link property sets and quantity sets
             if (elementPropertySets.TryGetValue(entity.Id, out var psets))
             {
                 element.PropertySets.AddRange(psets);
+            }
+            if (elementQuantitySets.TryGetValue(entity.Id, out var qsets))
+            {
+                element.QuantitySets.AddRange(qsets);
             }
 
             // Parse Mesh / Solid Geometry
             int? shapeDefId = entity.GetRef(6);
             if (shapeDefId.HasValue)
             {
-                var mesh = ParseGeometry(step, shapeDefId.Value, name, geomToMaterialMap, out var mat, out var solid);
+                var mesh = ParseGeometry(step, shapeDefId.Value, name, geomToMaterialMap, out var mat, out var solid, out var revSolid);
                 if (mesh is not null)
                 {
                     element.Mesh = mesh;
@@ -705,6 +858,10 @@ public sealed class IfcModel
                 if (solid is not null)
                 {
                     element.Solid = solid;
+                }
+                if (revSolid is not null)
+                {
+                    element.RevolvedSolid = revSolid;
                 }
                 if (mat is not null)
                 {
@@ -773,6 +930,19 @@ public sealed class IfcModel
                 $"$,$,({StepWriter.Ref(shapeRepId)})");
         }
 
+        if (element.RevolvedSolid is not null)
+        {
+            int solidGeomId = WriteRevolvedAreaSolid(w, element.RevolvedSolid);
+            if (styleId.HasValue)
+            {
+                w.Add("IFCSTYLEDITEM", $"{StepWriter.Ref(solidGeomId)},({StepWriter.Ref(styleId.Value)}),{StepWriter.Str(element.Material?.Name)}");
+            }
+            int shapeRepId = w.Add("IFCSHAPEREPRESENTATION",
+                $"{StepWriter.Ref(bodySubContextId)},'Body','SweptSolid',({StepWriter.Ref(solidGeomId)})");
+            return w.Add("IFCPRODUCTDEFINITIONSHAPE",
+                $"$,$,({StepWriter.Ref(shapeRepId)})");
+        }
+
         if (element.Mesh is not null && element.Mesh.Vertices.Count >= 3 && element.Mesh.Indices.Count >= 3)
         {
             int geomId;
@@ -803,10 +973,9 @@ public sealed class IfcModel
         return StepWriter.Null == "$" ? w.Add("IFCPRODUCTDEFINITIONSHAPE", "$,$,()") : 0;
     }
 
-    private static int WriteExtrudedAreaSolid(StepWriter w, IfcExtrudedAreaSolid solid)
+    private static int WriteProfileDef(StepWriter w, IfcProfileDef profile)
     {
-        int profileId;
-        if (solid.Profile is IfcRectangleProfileDef rect)
+        if (profile is IfcRectangleProfileDef rect)
         {
             string placement2dRef = "$";
             if (Math.Abs(rect.Position.X) > 1e-9 || Math.Abs(rect.Position.Y) > 1e-9)
@@ -815,9 +984,9 @@ public sealed class IfcModel
                 int pl2dId = w.Add("IFCAXIS2PLACEMENT2D", $"{StepWriter.Ref(pt2dId)},$");
                 placement2dRef = StepWriter.Ref(pl2dId);
             }
-            profileId = w.Add("IFCRECTANGLEPROFILEDEF", $".AREA.,{StepWriter.Str(rect.ProfileName)},{placement2dRef},{StepWriter.Real(rect.XDim)},{StepWriter.Real(rect.YDim)}");
+            return w.Add("IFCRECTANGLEPROFILEDEF", $".AREA.,{StepWriter.Str(rect.ProfileName)},{placement2dRef},{StepWriter.Real(rect.XDim)},{StepWriter.Real(rect.YDim)}");
         }
-        else if (solid.Profile is IfcCircleProfileDef circ)
+        if (profile is IfcCircleProfileDef circ)
         {
             string placement2dRef = "$";
             if (Math.Abs(circ.Position.X) > 1e-9 || Math.Abs(circ.Position.Y) > 1e-9)
@@ -826,9 +995,9 @@ public sealed class IfcModel
                 int pl2dId = w.Add("IFCAXIS2PLACEMENT2D", $"{StepWriter.Ref(pt2dId)},$");
                 placement2dRef = StepWriter.Ref(pl2dId);
             }
-            profileId = w.Add("IFCCIRCLEPROFILEDEF", $".AREA.,{StepWriter.Str(circ.ProfileName)},{placement2dRef},{StepWriter.Real(circ.Radius)}");
+            return w.Add("IFCCIRCLEPROFILEDEF", $".AREA.,{StepWriter.Str(circ.ProfileName)},{placement2dRef},{StepWriter.Real(circ.Radius)}");
         }
-        else if (solid.Profile is IfcArbitraryClosedProfileDef poly)
+        if (profile is IfcArbitraryClosedProfileDef poly)
         {
             var ptIds = new List<int>(poly.CurvePoints.Count);
             foreach (var pt in poly.CurvePoints)
@@ -836,18 +1005,33 @@ public sealed class IfcModel
                 ptIds.Add(w.Add("IFCCARTESIANPOINT", StepWriter.List(StepWriter.Real(pt.X), StepWriter.Real(pt.Y))));
             }
             int polyLineId = w.Add("IFCPOLYLINE", StepWriter.List(ptIds.Select(StepWriter.Ref)));
-            profileId = w.Add("IFCARBITRARYCLOSEDPROFILEDEF", $".AREA.,{StepWriter.Str(poly.ProfileName)},{StepWriter.Ref(polyLineId)}");
-        }
-        else
-        {
-            throw new NotSupportedException($"Profile type {solid.Profile.GetType().Name} is not supported.");
+            return w.Add("IFCARBITRARYCLOSEDPROFILEDEF", $".AREA.,{StepWriter.Str(poly.ProfileName)},{StepWriter.Ref(polyLineId)}");
         }
 
+        throw new NotSupportedException($"Profile type {profile.GetType().Name} is not supported.");
+    }
+
+    private static int WriteExtrudedAreaSolid(StepWriter w, IfcExtrudedAreaSolid solid)
+    {
+        int profileId = WriteProfileDef(w, solid.Profile);
         int solidPtId = w.Add("IFCCARTESIANPOINT", StepWriter.List(StepWriter.Real(solid.Position.X), StepWriter.Real(solid.Position.Y), StepWriter.Real(solid.Position.Z)));
         int solidPlacementId = w.Add("IFCAXIS2PLACEMENT3D", $"{StepWriter.Ref(solidPtId)},$,$");
         int dirId = w.Add("IFCDIRECTION", StepWriter.List(StepWriter.Real(solid.Direction.X), StepWriter.Real(solid.Direction.Y), StepWriter.Real(solid.Direction.Z)));
 
         return w.Add("IFCEXTRUDEDAREASOLID", $"{StepWriter.Ref(profileId)},{StepWriter.Ref(solidPlacementId)},{StepWriter.Ref(dirId)},{StepWriter.Real(solid.Depth)}");
+    }
+
+    private static int WriteRevolvedAreaSolid(StepWriter w, IfcRevolvedAreaSolid solid)
+    {
+        int profileId = WriteProfileDef(w, solid.Profile);
+        int solidPtId = w.Add("IFCCARTESIANPOINT", StepWriter.List(StepWriter.Real(solid.Position.X), StepWriter.Real(solid.Position.Y), StepWriter.Real(solid.Position.Z)));
+        int solidPlacementId = w.Add("IFCAXIS2PLACEMENT3D", $"{StepWriter.Ref(solidPtId)},$,$");
+
+        int axisLocPtId = w.Add("IFCCARTESIANPOINT", StepWriter.List(StepWriter.Real(solid.Axis.Location.X), StepWriter.Real(solid.Axis.Location.Y), StepWriter.Real(solid.Axis.Location.Z)));
+        int axisDirId = w.Add("IFCDIRECTION", StepWriter.List(StepWriter.Real(solid.Axis.Axis.X), StepWriter.Real(solid.Axis.Axis.Y), StepWriter.Real(solid.Axis.Axis.Z)));
+        int axisPlacementId = w.Add("IFCAXIS1PLACEMENT", $"{StepWriter.Ref(axisLocPtId)},{StepWriter.Ref(axisDirId)}");
+
+        return w.Add("IFCREVOLVEDAREASOLID", $"{StepWriter.Ref(profileId)},{StepWriter.Ref(solidPlacementId)},{StepWriter.Ref(axisPlacementId)},{StepWriter.Real(solid.Angle)}");
     }
 
     private static IfcMesh? ParseGeometry(
@@ -856,10 +1040,12 @@ public sealed class IfcModel
         string meshName,
         Dictionary<int, IfcMaterial> geomToMaterialMap,
         out IfcMaterial? material,
-        out IfcExtrudedAreaSolid? solid)
+        out IfcExtrudedAreaSolid? solid,
+        out IfcRevolvedAreaSolid? revolvedSolid)
     {
         material = null;
         solid = null;
+        revolvedSolid = null;
         var shapeDef = step.Find(shapeDefId);
         if (shapeDef is null) return null;
 
@@ -1002,35 +1188,7 @@ public sealed class IfcModel
                     int? dirId = itemEnt.GetRef(2);
                     double depth = itemEnt.GetReal(3) ?? 0.0;
 
-                    IfcProfileDef? profile = null;
-                    if (profileId.HasValue)
-                    {
-                        var profEnt = step.Find(profileId.Value);
-                        if (profEnt is not null)
-                        {
-                            string pName = profEnt.GetString(1) ?? "Profile";
-                            if (profEnt.Type.Equals("IFCRECTANGLEPROFILEDEF", StringComparison.OrdinalIgnoreCase))
-                            {
-                                double xDim = profEnt.GetReal(3) ?? 0.0;
-                                double yDim = profEnt.GetReal(4) ?? 0.0;
-                                var pos2d = ParsePlacement2D(step, profEnt.GetRef(2));
-                                profile = new IfcRectangleProfileDef(xDim, yDim, pos2d, pName);
-                            }
-                            else if (profEnt.Type.Equals("IFCCIRCLEPROFILEDEF", StringComparison.OrdinalIgnoreCase))
-                            {
-                                double radius = profEnt.GetReal(3) ?? 0.0;
-                                var pos2d = ParsePlacement2D(step, profEnt.GetRef(2));
-                                profile = new IfcCircleProfileDef(radius, pos2d, pName);
-                            }
-                            else if (profEnt.Type.Equals("IFCARBITRARYCLOSEDPROFILEDEF", StringComparison.OrdinalIgnoreCase))
-                            {
-                                int? curveId = profEnt.GetRef(2);
-                                var pts = ParsePolylinePoints(step, curveId);
-                                profile = new IfcArbitraryClosedProfileDef(pts, pName);
-                            }
-                        }
-                    }
-
+                    var profile = ParseProfile(step, profileId);
                     if (profile is not null)
                     {
                         var pos3d = ParsePlacement3D(step, posPlacementId);
@@ -1040,10 +1198,75 @@ public sealed class IfcModel
                         return extrudedSolid.ToMesh(16, meshName);
                     }
                 }
+
+                // D. IFCREVOLVEDAREASOLID
+                if (itemEnt.Type.Equals("IFCREVOLVEDAREASOLID", StringComparison.OrdinalIgnoreCase))
+                {
+                    int? profileId = itemEnt.GetRef(0);
+                    int? posPlacementId = itemEnt.GetRef(1);
+                    int? axisId = itemEnt.GetRef(2);
+                    double angle = itemEnt.GetReal(3) ?? (2.0 * Math.PI);
+
+                    var profile = ParseProfile(step, profileId);
+                    if (profile is not null)
+                    {
+                        var pos3d = ParsePlacement3D(step, posPlacementId);
+                        var axis1 = ParseAxis1Placement(step, axisId);
+                        var revSolid = new IfcRevolvedAreaSolid(profile, angle, pos3d, axis1);
+                        revolvedSolid = revSolid;
+                        return revSolid.ToMesh(16, 24, meshName);
+                    }
+                }
             }
         }
 
         return null;
+    }
+
+    private static IfcProfileDef? ParseProfile(StepFile step, int? profileId)
+    {
+        if (!profileId.HasValue) return null;
+        var profEnt = step.Find(profileId.Value);
+        if (profEnt is null) return null;
+
+        string pName = profEnt.GetString(1) ?? "Profile";
+        if (profEnt.Type.Equals("IFCRECTANGLEPROFILEDEF", StringComparison.OrdinalIgnoreCase))
+        {
+            double xDim = profEnt.GetReal(3) ?? 0.0;
+            double yDim = profEnt.GetReal(4) ?? 0.0;
+            var pos2d = ParsePlacement2D(step, profEnt.GetRef(2));
+            return new IfcRectangleProfileDef(xDim, yDim, pos2d, pName);
+        }
+
+        if (profEnt.Type.Equals("IFCCIRCLEPROFILEDEF", StringComparison.OrdinalIgnoreCase))
+        {
+            double radius = profEnt.GetReal(3) ?? 0.0;
+            var pos2d = ParsePlacement2D(step, profEnt.GetRef(2));
+            return new IfcCircleProfileDef(radius, pos2d, pName);
+        }
+
+        if (profEnt.Type.Equals("IFCARBITRARYCLOSEDPROFILEDEF", StringComparison.OrdinalIgnoreCase))
+        {
+            int? curveId = profEnt.GetRef(2);
+            var pts = ParsePolylinePoints(step, curveId);
+            return new IfcArbitraryClosedProfileDef(pts, pName);
+        }
+
+        return null;
+    }
+
+    private static IfcAxis1Placement ParseAxis1Placement(StepFile step, int? axisPlacementId)
+    {
+        if (!axisPlacementId.HasValue) return new IfcAxis1Placement();
+        var ent = step.Find(axisPlacementId.Value);
+        if (ent is null) return new IfcAxis1Placement();
+
+        int? locId = ent.GetRef(0);
+        int? dirId = ent.GetRef(1);
+
+        var loc = ParsePlacement3D(step, locId);
+        var dir = ParseDirection(step, dirId);
+        return new IfcAxis1Placement(loc, dir);
     }
 
     private static IfcVector3 ParsePlacement2D(StepFile step, int? placementId)

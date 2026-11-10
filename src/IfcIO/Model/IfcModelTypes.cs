@@ -63,6 +63,148 @@ public sealed class IfcPropertySet
 }
 
 /// <summary>
+/// Abstract base class for physical BIM simple quantities (Length, Area, Volume, Count, Weight).
+/// Conforms to buildingSMART IFC standard IFCPHYSICALSIMPLEQUANTITY.
+/// </summary>
+public abstract class IfcPhysicalQuantity
+{
+    public string Name { get; set; } = string.Empty;
+    public string? Description { get; set; }
+}
+
+/// <summary>
+/// A physical length quantity (e.g. Height, Width, Length, Perimeter).
+/// Conforms to buildingSMART standard IFCQUANTITYLENGTH.
+/// </summary>
+public sealed class IfcQuantityLength : IfcPhysicalQuantity
+{
+    public double LengthValue { get; set; }
+
+    public IfcQuantityLength() { }
+
+    public IfcQuantityLength(string name, double value, string? description = null)
+    {
+        Name = name;
+        LengthValue = value;
+        Description = description;
+    }
+}
+
+/// <summary>
+/// A physical area quantity (e.g. GrossArea, NetArea, GrossFootprintArea, NetSideArea).
+/// Conforms to buildingSMART standard IFCQUANTITYAREA.
+/// </summary>
+public sealed class IfcQuantityArea : IfcPhysicalQuantity
+{
+    public double AreaValue { get; set; }
+
+    public IfcQuantityArea() { }
+
+    public IfcQuantityArea(string name, double value, string? description = null)
+    {
+        Name = name;
+        AreaValue = value;
+        Description = description;
+    }
+}
+
+/// <summary>
+/// A physical volume quantity (e.g. GrossVolume, NetVolume).
+/// Conforms to buildingSMART standard IFCQUANTITYVOLUME.
+/// </summary>
+public sealed class IfcQuantityVolume : IfcPhysicalQuantity
+{
+    public double VolumeValue { get; set; }
+
+    public IfcQuantityVolume() { }
+
+    public IfcQuantityVolume(string name, double value, string? description = null)
+    {
+        Name = name;
+        VolumeValue = value;
+        Description = description;
+    }
+}
+
+/// <summary>
+/// A physical count quantity (e.g. number of items).
+/// Conforms to buildingSMART standard IFCQUANTITYCOUNT.
+/// </summary>
+public sealed class IfcQuantityCount : IfcPhysicalQuantity
+{
+    public double CountValue { get; set; }
+
+    public IfcQuantityCount() { }
+
+    public IfcQuantityCount(string name, double value, string? description = null)
+    {
+        Name = name;
+        CountValue = value;
+        Description = description;
+    }
+}
+
+/// <summary>
+/// A physical weight quantity (e.g. GrossWeight, NetWeight).
+/// Conforms to buildingSMART standard IFCQUANTITYWEIGHT.
+/// </summary>
+public sealed class IfcQuantityWeight : IfcPhysicalQuantity
+{
+    public double WeightValue { get; set; }
+
+    public IfcQuantityWeight() { }
+
+    public IfcQuantityWeight(string name, double value, string? description = null)
+    {
+        Name = name;
+        WeightValue = value;
+        Description = description;
+    }
+}
+
+/// <summary>
+/// A collection of physical simple quantities associated with an element or element type.
+/// Conforms to buildingSMART IFC standard IFCELEMENTQUANTITY.
+/// </summary>
+public sealed class IfcQuantitySet
+{
+    public string Name { get; set; } = "BaseQuantities";
+    public string? Description { get; set; }
+    public string? MethodOfMeasurement { get; set; }
+    public List<IfcPhysicalQuantity> Quantities { get; } = [];
+
+    public IfcQuantitySet() { }
+
+    public IfcQuantitySet(string name, string? description = null, string? methodOfMeasurement = null)
+    {
+        Name = name;
+        Description = description;
+        MethodOfMeasurement = methodOfMeasurement;
+    }
+
+    public void AddLength(string name, double value, string? desc = null) => Quantities.Add(new IfcQuantityLength(name, value, desc));
+    public void AddArea(string name, double value, string? desc = null) => Quantities.Add(new IfcQuantityArea(name, value, desc));
+    public void AddVolume(string name, double value, string? desc = null) => Quantities.Add(new IfcQuantityVolume(name, value, desc));
+    public void AddCount(string name, double value, string? desc = null) => Quantities.Add(new IfcQuantityCount(name, value, desc));
+    public void AddWeight(string name, double value, string? desc = null) => Quantities.Add(new IfcQuantityWeight(name, value, desc));
+
+    public double? GetLength(string name) =>
+        Quantities.OfType<IfcQuantityLength>().FirstOrDefault(q => q.Name.Equals(name, StringComparison.OrdinalIgnoreCase))?.LengthValue;
+
+    public double? GetArea(string name) =>
+        Quantities.OfType<IfcQuantityArea>().FirstOrDefault(q => q.Name.Equals(name, StringComparison.OrdinalIgnoreCase))?.AreaValue;
+
+    public double? GetVolume(string name) =>
+        Quantities.OfType<IfcQuantityVolume>().FirstOrDefault(q => q.Name.Equals(name, StringComparison.OrdinalIgnoreCase))?.VolumeValue;
+
+    public double? GetCount(string name) =>
+        Quantities.OfType<IfcQuantityCount>().FirstOrDefault(q => q.Name.Equals(name, StringComparison.OrdinalIgnoreCase))?.CountValue;
+
+    public double? GetWeight(string name) =>
+        Quantities.OfType<IfcQuantityWeight>().FirstOrDefault(q => q.Name.Equals(name, StringComparison.OrdinalIgnoreCase))?.WeightValue;
+}
+
+/// <summary>
 /// Represents a building storey / level.
 /// </summary>
 public sealed class IfcBuildingStorey
@@ -109,14 +251,16 @@ public class IfcElement
     public IfcTypeProduct? TypeProduct { get; set; }
     public IfcMesh? Mesh { get; set; }
     public IfcExtrudedAreaSolid? Solid { get; set; }
+    public IfcRevolvedAreaSolid? RevolvedSolid { get; set; }
     public IfcMaterial? Material { get; set; }
     public List<IfcPropertySet> PropertySets { get; } = [];
+    public List<IfcQuantitySet> QuantitySets { get; } = [];
     public List<IfcOpeningElement> Openings { get; } = [];
 
     /// <summary>
     /// Gets the polygon mesh representation of the element, either explicitly assigned or generated on demand from its parametric solid.
     /// </summary>
-    public IfcMesh? GetEffectiveMesh() => Mesh ?? Solid?.ToMesh();
+    public IfcMesh? GetEffectiveMesh() => Mesh ?? Solid?.ToMesh() ?? RevolvedSolid?.ToMesh();
 
     public IfcPropertySet GetOrCreatePropertySet(string name)
     {
@@ -126,6 +270,16 @@ public class IfcElement
         var pset = new IfcPropertySet(name);
         PropertySets.Add(pset);
         return pset;
+    }
+
+    public IfcQuantitySet GetOrCreateQuantitySet(string name)
+    {
+        var existing = QuantitySets.Find(q => q.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        if (existing is not null) return existing;
+
+        var qset = new IfcQuantitySet(name);
+        QuantitySets.Add(qset);
+        return qset;
     }
 }
 

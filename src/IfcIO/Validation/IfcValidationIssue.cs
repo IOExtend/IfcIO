@@ -19,6 +19,8 @@ public sealed class IfcValidationIssue
     public required IfcIssueSeverity Severity { get; init; }
     public required string Message { get; init; }
     public string? EntityName { get; init; }
+    public int? ElementId { get; init; }
+    public string? GlobalId { get; init; }
 
     public override string ToString() =>
         $"[{Severity.ToString().ToUpperInvariant()}] ({RuleId}) {(EntityName is not null ? $"'{EntityName}': " : "")}{Message}";

@@ -202,6 +202,92 @@ public static class IfcValidator
             ValidatePropertySets(typeProd.PropertySets, typeDesc, issues);
         }
 
+        // 6. Spaces validation
+        var allSpaces = model.AllSpaces.ToList();
+        for (int sp = 0; sp < allSpaces.Count; sp++)
+        {
+            var space = allSpaces[sp];
+            string spaceDesc = $"Space '{space.Name}' (ID {space.Id})";
+
+            CheckGlobalId(space.GlobalId, spaceDesc);
+
+            if (space.Height <= 0 || !double.IsFinite(space.Height))
+            {
+                issues.Add(new IfcValidationIssue
+                {
+                    RuleId = "IFC_SPACE_HEIGHT",
+                    Severity = IfcIssueSeverity.Error,
+                    Message = $"Space height must be positive and finite (actual: {space.Height}).",
+                    EntityName = spaceDesc,
+                    ElementId = space.Id,
+                    GlobalId = space.GlobalId,
+                });
+            }
+
+            if (space.GrossFloorArea < 0 || !double.IsFinite(space.GrossFloorArea))
+            {
+                issues.Add(new IfcValidationIssue
+                {
+                    RuleId = "IFC_SPACE_AREA",
+                    Severity = IfcIssueSeverity.Error,
+                    Message = $"Space gross floor area must be non-negative and finite (actual: {space.GrossFloorArea}).",
+                    EntityName = spaceDesc,
+                    ElementId = space.Id,
+                    GlobalId = space.GlobalId,
+                });
+            }
+
+            if (space.Mesh is not null)
+            {
+                ValidateMesh(space.Mesh, spaceDesc, issues);
+            }
+            ValidatePropertySets(space.PropertySets, spaceDesc, issues);
+            ValidateQuantitySets(space.QuantitySets, spaceDesc, issues);
+        }
+
+        // 7. Systems and Groups validation
+        foreach (var sys in model.Systems)
+        {
+            string sysDesc = $"System '{sys.Name}' ({sys.SystemType})";
+            if (string.IsNullOrWhiteSpace(sys.Name))
+            {
+                issues.Add(new IfcValidationIssue
+                {
+                    RuleId = "IFC_SYSTEM_NAME",
+                    Severity = IfcIssueSeverity.Error,
+                    Message = "System name must not be empty or whitespace.",
+                    EntityName = sysDesc
+                });
+            }
+            if (sys.Elements.Count == 0)
+            {
+                issues.Add(new IfcValidationIssue
+                {
+                    RuleId = "IFC_SYSTEM_EMPTY",
+                    Severity = IfcIssueSeverity.Warning,
+                    Message = $"System '{sys.Name}' contains no assigned elements.",
+                    EntityName = sysDesc
+                });
+            }
+            CheckGlobalId(sys.GlobalId, sysDesc);
+        }
+
+        foreach (var grp in model.Groups)
+        {
+            string grpDesc = $"Group '{grp.Name}'";
+            if (string.IsNullOrWhiteSpace(grp.Name))
+            {
+                issues.Add(new IfcValidationIssue
+                {
+                    RuleId = "IFC_GROUP_NAME",
+                    Severity = IfcIssueSeverity.Error,
+                    Message = "Group name must not be empty or whitespace.",
+                    EntityName = grpDesc
+                });
+            }
+            CheckGlobalId(grp.GlobalId, grpDesc);
+        }
+
         return new IfcValidationResult { Issues = issues };
     }
 

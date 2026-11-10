@@ -45,6 +45,8 @@ public sealed class IfcModel
     public IEnumerable<IfcOpeningElement> AllOpenings => AllElements.SelectMany(e => e.Openings);
     public IEnumerable<IfcDistributionPort> AllPorts => AllElements.SelectMany(e => e.Ports);
 
+    private bool _hasCustomStorey;
+
     public IfcModel()
     {
         // Default storey
@@ -64,6 +66,24 @@ public sealed class IfcModel
     /// <summary>Adds a storey to the building spatial hierarchy.</summary>
     public IfcBuildingStorey AddStorey(string name, double elevation = 0.0)
     {
+        var existing = Storeys.Find(s => s.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        if (existing is not null)
+        {
+            _hasCustomStorey = true;
+            existing.Elevation = elevation;
+            return existing;
+        }
+
+        // If no custom storeys have been configured and the only storey is the default empty "Level 1", reuse/rename it
+        if (!_hasCustomStorey && Storeys.Count == 1 && Storeys[0].Elements.Count == 0 && Storeys[0].Spaces.Count == 0 && Storeys[0].Name == "Level 1" && Math.Abs(Storeys[0].Elevation) < 1e-9)
+        {
+            _hasCustomStorey = true;
+            Storeys[0].Name = name;
+            Storeys[0].Elevation = elevation;
+            return Storeys[0];
+        }
+
+        _hasCustomStorey = true;
         var storey = new IfcBuildingStorey { Name = name, Elevation = elevation };
         Storeys.Add(storey);
         return storey;
@@ -575,6 +595,62 @@ public sealed class IfcModel
 
     /// <summary>Validates the model against buildingSMART MVD and geometric integrity rules.</summary>
     public Validation.IfcValidationResult Validate() => Validation.IfcValidator.Validate(this);
+
+    /// <summary>Selects all elements in the model matching an IfcOpenShell-style selector query string.</summary>
+    public IEnumerable<IfcElement> Select(string selectorQuery) =>
+        Query.IfcSelector.Parse(selectorQuery).Evaluate(this);
+
+    /// <summary>Purges unreferenced, empty, and duplicate property sets, quantity sets, and empty building storeys.</summary>
+    public Patch.IfcPurgeStats Purge() => Patch.IfcPatch.Purge(this);
+
+    /// <summary>Offsets all 3D mesh vertices in the model by a translation vector.</summary>
+    public void OffsetCoordinates(Geometry.IfcVector3 offset) => Patch.IfcPatch.OffsetCoordinates(this, offset);
+
+    /// <summary>
+    /// Detects large absolute coordinate offsets and centers geometry around the local origin (0,0,0) to prevent precision jitter.
+    /// </summary>
+    public bool ResetCoordinates(out Geometry.IfcVector3 offset, double thresholdDistance = 10000.0) =>
+        Patch.IfcPatch.ResetCoordinates(this, out offset, thresholdDistance);
+
+    /// <summary>Extracts elements matching a selector query string into a new self-contained IFC model.</summary>
+    public IfcModel Extract(string selectorQuery, string? newProjectName = null) =>
+        Patch.IfcPatch.Extract(this, selectorQuery, newProjectName);
+
+    /// <summary>Extracts elements matching a predicate into a new self-contained IFC model.</summary>
+    public IfcModel Extract(Func<IfcElement, bool> predicate, string? newProjectName = null) =>
+        Patch.IfcPatch.Extract(this, predicate, newProjectName);
+
+    /// <summary>Merges multiple IFC models into a single coordinated model, reconciling storeys and re-indexing IDs.</summary>
+    public static IfcModel Merge(IEnumerable<IfcModel> models, string mergedProjectName = "Merged Project") =>
+        Patch.IfcPatch.Merge(models, mergedProjectName);
+
+    /// <summary>Validates the model against a buildingSMART Information Delivery Specification (IDS 1.0) XML file.</summary>
+    public Validation.Ids.IfcIdsValidationReport ValidateIds(string idsPath) =>
+        Validation.Ids.IfcIdsValidator.ValidateFile(this, idsPath);
+
+    /// <summary>Validates the model against a buildingSMART Information Delivery Specification (IDS 1.0) XML stream.</summary>
+    public Validation.Ids.IfcIdsValidationReport ValidateIds(Stream idsStream) =>
+        Validation.Ids.IfcIdsValidator.Validate(this, idsStream);
+
+    /// <summary>Validates the model against a loaded buildingSMART IDS <see cref="System.Xml.Linq.XDocument"/>.</summary>
+    public Validation.Ids.IfcIdsValidationReport ValidateIds(System.Xml.Linq.XDocument idsDoc) =>
+        Validation.Ids.IfcIdsValidator.Validate(this, idsDoc);
+
+    /// <summary>Exports elements and selected properties to a CSV spreadsheet file.</summary>
+    public void ExportCsv(string path, IEnumerable<string> propertyNames, string delimiter = ";") =>
+        IfcCsvBridge.ExportFile(this, path, propertyNames, delimiter);
+
+    /// <summary>Exports elements and selected properties to a CSV <see cref="TextWriter"/>.</summary>
+    public void ExportCsv(TextWriter writer, IEnumerable<string> propertyNames, string delimiter = ";") =>
+        IfcCsvBridge.Export(this, writer, propertyNames, delimiter);
+
+    /// <summary>Imports tabular CSV property values into matching elements by GlobalId or Id from a file.</summary>
+    public (int ElementsUpdated, int PropertiesUpdated) ImportCsv(string path, string delimiter = ";") =>
+        IfcCsvBridge.ImportFile(this, path, delimiter);
+
+    /// <summary>Imports tabular CSV property values into matching elements by GlobalId or Id from a <see cref="TextReader"/>.</summary>
+    public (int ElementsUpdated, int PropertiesUpdated) ImportCsv(TextReader reader, string delimiter = ";") =>
+        IfcCsvBridge.Import(this, reader, delimiter);
 
     /// <summary>Serializes the IFC model to a file on disk (.ifc or .ifczip).</summary>
     public void Save(string path)

@@ -2,6 +2,38 @@
 
 All notable changes to the `IfcIO` library are documented in this file.
 
+## [0.7.0] - 2026-11-10
+
+### Major Additions & Capabilities
+- **IfcOpenShell-Compatible Query Selector Engine (`IfcSelector` / `IfcIO.Query`)**:
+  - Declarative filtering syntax matching IfcOpenShell query selectors:
+    - Entity types (`IfcWall`, `IFCWALLSTANDARDCASE`, `*`).
+    - Spatial hierarchy containers (`#Level 1`, `@Level 2`).
+    - Property, attribute, and quantity filters with operators: `=`, `!=`, `*=`, `^=`, `$=`, `>`, `<`, `>=`, `<=`, and existence checks (`[LoadBearing=TRUE]`, `[FireRating>=60]`, `[Name*='Conc']`).
+    - Comma-separated union lists (`IfcWall, IfcColumn`).
+  - Native integration: `model.Select(query)` and element extension method `element.Matches(query, model)`.
+- **Model Repair, Cleanup, Coordinate Shifting & Merging Recipes (`IfcPatch` / `IfcIO.Patch`)**:
+  - Direct 100% managed .NET implementation of IfcOpenShell `ifcpatch` recipe architecture.
+  - `Purge`: removes unreferenced, empty, and duplicate property sets, quantity sets, and orphaned empty storeys.
+  - `ResetCoordinates`: detects large absolute UTM/Civil coordinates (> 10,000m) and centers geometry at local (0, 0, 0) to eliminate 32-bit/64-bit floating point precision jitter.
+  - `OffsetCoordinates`: translates all 3D mesh vertices by an offset vector.
+  - `Extract`: slices a subset of elements matching an `IfcSelector` query into a new, self-contained IFC model preserving spatial hierarchy, units, and materials.
+  - `Merge`: combines multiple IFC models into a single coordinated model, reconciling storeys by name and elevation and re-indexing IDs sequentially.
+- **buildingSMART Information Delivery Specification (IDS 1.0) Audit Engine (`IfcIdsValidator` / `IfcIO.Validation.Ids`)**:
+  - Implements the buildingSMART IDS 1.0 specification standard mirroring IfcOpenShell / IfcTester audit pipelines.
+  - Validates `<applicability>` criteria (entities, properties, materials) and `<requirements>` facets (properties with minOccurs/values, materials, attributes like Name, Tag, Description).
+  - Direct BCF 2.1 integration: `report.SaveBcf(path)` exports compliance issues and failed element GUIDs into a standard `.bcfzip` for BIM issue tracking in Revit, Solibri, and BIMcollab.
+- **Tabular Property CSV Roundtrip Bridge (`IfcCsvBridge` / `IfcIO.Model`)**:
+  - Mirroring `ifccsv` functionality in pure managed .NET.
+  - `ExportCsv`: exports element metadata and custom property set parameters to delimiter-separated spreadsheets (`.csv`).
+  - `ImportCsv`: bulk property updates and additions back into IFC model elements matched by `GlobalId` or `Id`.
+- **CLI Enhancements (`IfcIO.Cli`)**:
+  - `ifcio query <model.ifc> <selector>`: inspect elements matching selector query.
+  - `ifcio patch <model.ifc> -o <out.ifc> [--purge] [--reset-coords] [--offset X,Y,Z] [--extract <query>]`: run model repair and coordinate recipes.
+  - `ifcio validate-ids <model.ifc> <audit.ids> [--bcf <issues.bcfzip>]`: perform automated IDS 1.0 audit and export BCF topics.
+  - `ifcio export-csv <model.ifc> -o <out.csv> [--props P1,P2]`: export tabular property schedules.
+  - `ifcio import-csv <model.ifc> --csv <in.csv> -o <out.ifc>`: import modified property parameters into an IFC model.
+
 ## [0.6.0] - 2026-11-10
 
 ### Major Additions & Capabilities

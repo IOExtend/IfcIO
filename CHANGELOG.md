@@ -2,6 +2,40 @@
 
 All notable changes to the `IfcIO` library are documented in this file.
 
+## [0.9.0] - 2026-11-11
+
+### Major Additions & Capabilities
+- **Spatial Grid System (`IfcGridSystem`, `IfcGridAxis`, `IfcGridIntersection` / `IfcIO.Grids`)**:
+  - Full support for straight and multi-axis spatial grids, 2D/3D intersections, nearest grid axis/intersection lookup, and signed directional offset formatting (e.g. `"A (+0.50m) / 1 (-0.20m)"`).
+  - Automatic extraction of grid systems from `IFCGRID` and `IFCGRIDAXIS` entities (`model.ExtractGridSystem()`).
+  - Element and clash location assignment (`model.AssignGridLocations()`, `report.AssignGridLocations()`).
+  - Standalone XML grid definition roundtrip serialization (`grids.SaveXml`, `IfcGridSystem.ReadXml` / `LoadXml`).
+- **3D Geometric Measurement Engine (`IfcMeasureEngine` / `IfcIO.Measure`)**:
+  - Point-to-point 3D measurement with $\Delta X, \Delta Y, \Delta Z$, horizontal distance, pitch, and azimuth projections (`IfcMeasureEngine.MeasureDistance`).
+  - Point-to-mesh shortest distance using Christer Ericson's Voronoi region algorithm (`IfcMeasureEngine.MeasurePointToMesh`).
+  - Mesh-to-mesh clearance measurement (`IfcMeasureEngine.MeasureMeshToMesh`).
+  - Polyline path cumulative length and segment breakdowns (`IfcMeasureEngine.MeasurePath`).
+  - Triangle surface area, normal, and closest point calculations.
+  - Mesh surface area, closed volume (tetrahedron divergence theorem), and 3D centroid calculation.
+- **Intelligent Clash Grouping & Clustering (`IfcClashGrouper` / `IfcIO.Clash`)**:
+  - Spatial 3D proximity grouping using Disjoint-Set (Union-Find) clustering (`report.GroupByProximity`).
+  - Primary MEP/structural element grouping (`report.GroupByPrimaryElement`).
+  - Building storey grouping (`report.GroupByStorey`).
+  - Structural grid location grouping (`report.GroupByGrid`).
+  - Group dissolving (`report.UngroupAll`).
+  - Grouped buildingSMART BCF 2.1 zip archive export with cluster camera viewpoints.
+- **Enhanced Model Repair & Patching Recipes (`IfcPatch` / `IfcIO.Patch`)**:
+  - `MigrateSchema`: upgrades IFC2x3 models to IFC4 and enables modern tessellated geometries.
+  - `ScaleModel`: uniformly scales model geometry (e.g. converting mm to meters).
+  - `SetProperties`: batch property assignment across elements matching an `IfcSelector` query.
+- **Standalone 3D WebGL HTML Viewer Enhancements (`IfcHtmlViewerExporter` / `IfcIO.Exporters`)**:
+  - Interactive 2-point 3D measurement tool with live distance, delta coordinates, and pitch overlay.
+  - 2D canvas overlay drawing of architectural grid axes and bubble labels.
+- **CLI Enhancements (`IfcIO.Cli`)**:
+  - `ifcio clash`: added `--group <proximity|element|storey|grid>`, `--radius <meters>`, and `--grids <grids.xml>`.
+  - `ifcio patch`: added `--recipe <migrate|scale|offset|purge|reset>`, `--scale <factor>`, and `--migrate <schema>`.
+  - `ifcio view`, `ifcio info`: added `--grids <grids.xml>` and `--export-grids <out.xml>`.
+
 ## [0.8.0] - 2026-11-10
 
 ### Major Additions & Capabilities

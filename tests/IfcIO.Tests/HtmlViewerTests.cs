@@ -23,6 +23,11 @@ public sealed class HtmlViewerTests
         var col = model.AddExtrudedRectangle("Column C1", 0.4, 0.4, 3.5, position: new IfcVector3(4.0, 0, 0), storey: storey, ifcType: "IFCCOLUMN");
         col.GlobalId = "15Y9Wk_0f8pQ123456789B";
 
+        var gridSystem = new Grids.IfcGridSystem("Campus Grids");
+        gridSystem.AddAxis("A", new IfcVector3(0, -10, 0), new IfcVector3(0, 10, 0));
+        gridSystem.AddAxis("1", new IfcVector3(-10, 0, 0), new IfcVector3(10, 0, 0));
+        model.GridSystem = gridSystem;
+
         string tempPath = Path.Combine(Path.GetTempPath(), $"ifc_viewer_{Guid.NewGuid():N}.html");
         try
         {
@@ -33,6 +38,8 @@ public sealed class HtmlViewerTests
                 IncludeQuantities = true,
                 IncludeSpatialTree = true,
                 IncludeSectioning = true,
+                IncludeMeasure = true,
+                IncludeGrids = true,
             });
 
             Assert.True(File.Exists(tempPath));
@@ -43,6 +50,10 @@ public sealed class HtmlViewerTests
             Assert.Contains("<!DOCTYPE html>", html, StringComparison.Ordinal);
             Assert.Contains("<title>Hospital Complex - Level 1</title>", html, StringComparison.Ordinal);
             Assert.Contains("<canvas id=\"glcanvas\">", html, StringComparison.Ordinal);
+            Assert.Contains("<canvas id=\"overlay\">", html, StringComparison.Ordinal);
+            Assert.Contains("id=\"btn-measure\"", html, StringComparison.Ordinal);
+            Assert.Contains("id=\"measure-panel\"", html, StringComparison.Ordinal);
+            Assert.Contains("\"grids\"", html, StringComparison.Ordinal);
             Assert.Contains("<script id=\"ifc-data\"", html, StringComparison.Ordinal);
             Assert.Contains("Exterior Wall 300mm", html, StringComparison.Ordinal);
             Assert.Contains("Column C1", html, StringComparison.Ordinal);

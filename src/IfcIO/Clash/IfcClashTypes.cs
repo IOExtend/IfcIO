@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using IfcIO.Bcf;
 using IfcIO.Geometry;
@@ -51,10 +52,49 @@ public sealed class IfcClashResult
     public required IfcVector3 ClashPoint { get; init; }
     public double Distance { get; init; }
     public IfcClashType ClashType { get; init; } = IfcClashType.Hard;
+    public string Status { get; set; } = "Active";
+    public string? GridLocation { get; set; }
+    public string? AssignedTo { get; set; }
     public string? Description { get; set; }
 
     public override string ToString() =>
         $"[{ClashType}] {ElementA.Name} (#{ElementA.Id}) vs {ElementB.Name} (#{ElementB.Id}) at {ClashPoint} (Penetration: {Distance:F3}m)";
+}
+
+/// <summary>
+/// A logical group of related clashes in an IFC model (e.g. grouped by proximity, MEP run, storey, or grid).
+/// </summary>
+public sealed class IfcClashGroup
+{
+    public string Name { get; set; } = "Group 1";
+    public Guid GroupGuid { get; set; } = Guid.NewGuid();
+    public string Status { get; set; } = "Active";
+    public string? Description { get; set; }
+    public string? GridLocation { get; set; }
+    public string? AssignedTo { get; set; }
+    public List<IfcClashResult> Clashes { get; } = [];
+
+    public IfcVector3 ClashPoint => Clashes.Count == 0 ? IfcVector3.Zero :
+        new IfcVector3(
+            Clashes.Average(c => c.ClashPoint.X),
+            Clashes.Average(c => c.ClashPoint.Y),
+            Clashes.Average(c => c.ClashPoint.Z));
+
+    public double Distance => Clashes.Count == 0 ? 0.0 : Clashes.Max(c => c.Distance);
+
+    public IfcClashGroup() { }
+
+    public IfcClashGroup(string name, string status = "Active")
+    {
+        Name = name;
+        Status = status;
+    }
+
+    public void AddClash(IfcClashResult clash)
+    {
+        ArgumentNullException.ThrowIfNull(clash);
+        Clashes.Add(clash);
+    }
 }
 
 /// <summary>
@@ -66,6 +106,7 @@ public sealed class IfcClashReport
     public string? ModelBName { get; init; }
     public double Tolerance { get; init; }
     public List<IfcClashResult> Clashes { get; } = [];
+    public List<IfcClashGroup> Groups { get; } = [];
     public TimeSpan Elapsed { get; set; }
 
     public int TotalClashesCount => Clashes.Count;
@@ -96,12 +137,31 @@ public sealed class IfcClashReport
         writer.WriteNumber("totalClashes", Clashes.Count);
         writer.WriteNumber("elapsedMs", Elapsed.TotalMilliseconds);
 
+        if (Groups.Count > 0)
+        {
+            writer.WriteStartArray("groups");
+            foreach (var g in Groups)
+            {
+                writer.WriteStartObject();
+                writer.WriteString("guid", g.GroupGuid.ToString("D"));
+                writer.WriteString("name", g.Name);
+                writer.WriteString("status", g.Status);
+                if (!string.IsNullOrEmpty(g.GridLocation)) writer.WriteString("gridLocation", g.GridLocation);
+                if (!string.IsNullOrEmpty(g.Description)) writer.WriteString("description", g.Description);
+                writer.WriteNumber("clashesCount", g.Clashes.Count);
+                writer.WriteEndObject();
+            }
+            writer.WriteEndArray();
+        }
+
         writer.WriteStartArray("clashes");
         foreach (var c in Clashes)
         {
             writer.WriteStartObject();
             writer.WriteString("guid", c.Id.ToString("D"));
             writer.WriteString("type", c.ClashType.ToString());
+            writer.WriteString("status", c.Status);
+            if (!string.IsNullOrEmpty(c.GridLocation)) writer.WriteString("gridLocation", c.GridLocation);
             writer.WriteNumber("distance", c.Distance);
 
             writer.WriteStartObject("elementA");
@@ -147,6 +207,49 @@ public sealed class IfcClashReport
         ArgumentNullException.ThrowIfNull(path);
 
         var topics = new List<BcfTopic>();
+
+        // 1. Grouped clashes
+        foreach (var group in Groups)
+        {
+            string title = string.Create(CultureInfo.InvariantCulture, $"[Group] {group.Name} ({group.Clashes.Count} clashes)");
+            var sb = new StringBuilder();
+            sb.AppendLine(CultureInfo.InvariantCulture, $"Clash group '{group.Name}' containing {group.Clashes.Count} conflicts.");
+            if (!string.IsNullOrEmpty(group.GridLocation)) sb.AppendLine(CultureInfo.InvariantCulture, $"Grid: {group.GridLocation}");
+            if (!string.IsNullOrEmpty(group.Description)) sb.AppendLine(group.Description);
+            foreach (var c in group.Clashes.Take(10))
+            {
+                sb.AppendLine(CultureInfo.InvariantCulture, $" - {c.ElementA.Name} vs {c.ElementB.Name} (Penetration: {c.Distance:F3}m)");
+            }
+
+            var topic = new BcfTopic(title, sb.ToString().TrimEnd(), topicType: "Clash", priority: "High")
+            {
+                CreationAuthor = "IfcClashDetector",
+            };
+
+            var target = group.ClashPoint;
+            var offset = new IfcVector3(5.0, -5.0, 3.5);
+            var eye = target + offset;
+            var dir = (target - eye).Normalized();
+
+            var vp = new BcfViewpoint
+            {
+                CameraPosition = eye,
+                CameraDirection = dir,
+                CameraUpVector = new IfcVector3(0, 0, 1),
+                FieldOfView = 60.0,
+            };
+
+            foreach (var c in group.Clashes)
+            {
+                if (!string.IsNullOrEmpty(c.ElementA.GlobalId)) vp.SelectedElementGuids.Add(c.ElementA.GlobalId);
+                if (!string.IsNullOrEmpty(c.ElementB.GlobalId)) vp.SelectedElementGuids.Add(c.ElementB.GlobalId);
+            }
+
+            topic.Viewpoints.Add(vp);
+            topics.Add(topic);
+        }
+
+        // 2. Standalone ungrouped clashes
         foreach (var clash in Clashes)
         {
             string title = string.Create(CultureInfo.InvariantCulture, $"[Clash] {clash.ElementA.Name} vs {clash.ElementB.Name}");
@@ -185,5 +288,14 @@ public sealed class IfcClashReport
         }
 
         BcfZipExporter.Save(path, topics, projectName: ModelAName);
+    }
+
+    /// <summary>
+    /// Assigns grid location tags across all detected clashes using the specified grid system.
+    /// </summary>
+    public int AssignGridLocations(Grids.IfcGridSystem gridSystem)
+    {
+        ArgumentNullException.ThrowIfNull(gridSystem);
+        return gridSystem.AssignGridLocations(this);
     }
 }

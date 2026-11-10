@@ -146,4 +146,57 @@ public class PatchTests
         Assert.Equal(allIds.Distinct().Count(), allIds.Count);
         Assert.Equal([1, 2, 3], allIds);
     }
+
+    [Fact]
+    public void MigrateSchema_UpdatesVersionAndTessellation()
+    {
+        var model = IfcModel.Create("Legacy Model", IfcSchema.Ifc2x3);
+        model.UseTessellationInIfc4 = false;
+        Assert.Equal(IfcSchema.Ifc2x3, model.Schema);
+        Assert.False(model.UseTessellationInIfc4);
+
+        IfcPatch.MigrateSchema(model, IfcSchema.Ifc4);
+
+        Assert.Equal(IfcSchema.Ifc4, model.Schema);
+        Assert.True(model.UseTessellationInIfc4);
+    }
+
+    [Fact]
+    public void ScaleModel_ScalesAllVertices()
+    {
+        var model = IfcModel.Create("Scale Test");
+        var storey = model.AddStorey("Level 1", 0.0);
+        var mesh = IfcMesh.Create(1, "Mesh", [new IfcVector3(1000, 2000, 3000)], [0]);
+        var elem = new IfcElement { Id = 1, Name = "Item", IfcType = "IfcBuildingElementProxy", Mesh = mesh };
+        storey.Elements.Add(elem);
+
+        IfcPatch.ScaleModel(model, 0.001); // mm to m
+
+        Assert.Equal(1.0, elem.Mesh!.Vertices[0].X, 3);
+        Assert.Equal(2.0, elem.Mesh!.Vertices[0].Y, 3);
+        Assert.Equal(3.0, elem.Mesh!.Vertices[0].Z, 3);
+    }
+
+    [Fact]
+    public void SetProperties_AppliesPropertiesToMatchingElements()
+    {
+        var model = IfcModel.Create("Prop Test");
+        var storey = model.AddStorey("Level 1", 0.0);
+        var wall = new IfcElement { Id = 1, Name = "Exterior Wall", IfcType = "IfcWall" };
+        var col = new IfcElement { Id = 2, Name = "Column", IfcType = "IfcColumn" };
+        storey.Elements.Add(wall);
+        storey.Elements.Add(col);
+
+        int modified = IfcPatch.SetProperties(model, "IfcWall", "Pset_Custom", new Dictionary<string, string>
+        {
+            ["Manufacturer"] = "Acme Corp",
+            ["FireRating"] = "120"
+        });
+
+        Assert.Equal(1, modified);
+        var pset = wall.PropertySets.FirstOrDefault(p => p.Name == "Pset_Custom");
+        Assert.NotNull(pset);
+        Assert.Equal("Acme Corp", pset.GetValue("Manufacturer"));
+        Assert.Null(col.PropertySets.FirstOrDefault(p => p.Name == "Pset_Custom"));
+    }
 }

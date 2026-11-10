@@ -16,6 +16,9 @@ public sealed class IfcHtmlViewerOptions
     public bool IncludeQuantities { get; set; } = true;
     public bool IncludeSpatialTree { get; set; } = true;
     public bool IncludeSectioning { get; set; } = true;
+    public bool IncludeMeasure { get; set; } = true;
+    public bool IncludeGrids { get; set; } = true;
+    public Grids.IfcGridSystem? GridSystem { get; set; }
     public int MaxMeshVertices { get; set; } = 500000;
 }
 
@@ -34,6 +37,7 @@ public static class IfcHtmlViewerExporter
         ArgumentNullException.ThrowIfNull(model);
 
         options ??= new IfcHtmlViewerOptions { Title = !string.IsNullOrEmpty(model.ProjectName) ? model.ProjectName : Path.GetFileNameWithoutExtension(path) };
+        options.GridSystem ??= model.GridSystem;
         using var fs = File.Create(path);
         using var writer = new StreamWriter(fs, Encoding.UTF8);
         Write(writer, model, options);
@@ -47,6 +51,7 @@ public static class IfcHtmlViewerExporter
         ArgumentNullException.ThrowIfNull(writer);
         ArgumentNullException.ThrowIfNull(model);
         options ??= new IfcHtmlViewerOptions();
+        options.GridSystem ??= model.GridSystem;
 
         string jsonPayload = BuildJsonPayload(model, options);
 
@@ -91,7 +96,12 @@ header h1 { font-size: 15px; font-weight: 600; color: #fff; letter-spacing: 0.5p
 .panel-header { padding: 10px 14px; font-size: 11px; text-transform: uppercase; font-weight: 700; color: #888; border-bottom: 1px solid #222; }
 #viewport-container { flex: 1; position: relative; background: radial-gradient(circle at center, #2b3038 0%, #16181c 100%); overflow: hidden; }
 canvas#glcanvas { width: 100%; height: 100%; display: block; }
+canvas#overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 4; }
 .hud-stats { position: absolute; bottom: 12px; left: 14px; font-size: 11px; color: rgba(255,255,255,0.45); pointer-events: none; font-family: monospace; z-index: 5; }
+.measure-panel { position: absolute; top: 16px; right: 16px; background: rgba(25,25,25,0.92); border: 1px solid #00adb5; border-radius: 6px; padding: 10px 14px; font-size: 11px; z-index: 6; box-shadow: 0 4px 14px rgba(0,0,0,0.5); min-width: 180px; }
+.measure-panel .title { font-weight: 600; color: #00adb5; margin-bottom: 4px; display: flex; justify-content: space-between; }
+.measure-panel .row { display: flex; justify-content: space-between; margin: 2px 0; color: #ccc; }
+.measure-panel .val { font-weight: 600; color: #fff; }
 .section-panel { position: absolute; top: 12px; left: 12px; background: rgba(20, 20, 20, 0.9); border: 1px solid #333; border-radius: 6px; padding: 12px; font-size: 12px; z-index: 6; width: 210px; }
 .section-panel label { display: block; margin: 6px 0 2px; font-weight: 600; color: #bbb; }
 .section-panel input[type=range] { width: 100%; accent-color: #00adb5; }
@@ -114,6 +124,7 @@ canvas#glcanvas { width: 100%; height: 100%; display: block; }
 <header>
   <h1>{System.Net.WebUtility.HtmlEncode(title)}</h1>
   <div class="toolbar">
+    <button class="btn" id="btn-measure">Measure</button>
     <button class="btn" id="btn-reset-cam">Reset View</button>
     <button class="btn" id="btn-toggle-sec">Sectioning</button>
     <button class="btn" id="btn-wireframe">Wireframe</button>
@@ -132,6 +143,17 @@ canvas#glcanvas { width: 100%; height: 100%; display: block; }
   <div id="viewport-container">
     <div class="hud-stats" id="hud-stats">Elements: 0 | Triangles: 0</div>
     <canvas id="glcanvas"></canvas>
+    <canvas id="overlay"></canvas>
+    <div class="measure-panel" id="measure-panel" style="display:none;">
+      <div class="title"><span>3D Measure</span><span id="measure-clear" style="cursor:pointer;color:#888;">&times;</span></div>
+      <div id="measure-status" style="color:#aaa;margin-bottom:4px;">Click 2 points to measure</div>
+      <div id="measure-results" style="display:none;">
+        <div class="row"><span>Distance:</span><span class="val" id="m-dist">0.00 m</span></div>
+        <div class="row"><span>Horiz Dist:</span><span class="val" id="m-horiz">0.00 m</span></div>
+        <div class="row"><span>dX / dY / dZ:</span><span class="val" id="m-deltas">0 / 0 / 0</span></div>
+        <div class="row"><span>Pitch:</span><span class="val" id="m-pitch">0.0°</span></div>
+      </div>
+    </div>
     <div class="section-panel" id="sec-controls" style="display:none;">
       <label><input type="checkbox" id="clip-x-en"> Cut X</label>
       <input type="range" id="clip-x-val" min="-100" max="100" value="0">
@@ -158,6 +180,7 @@ canvas#glcanvas { width: 100%; height: 100%; display: block; }
 (function() {
   const modelData = JSON.parse(document.getElementById('ifc-data').textContent);
   const canvas = document.getElementById('glcanvas');
+  const overlay = document.getElementById('overlay');
   const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
 
   if (!gl) {
@@ -176,6 +199,11 @@ canvas#glcanvas { width: 100%; height: 100%; display: block; }
   let lastMouseY = 0;
   let selectedElementIndex = -1;
   let wireframeMode = false;
+  let measureMode = false;
+  let measureP1 = null;
+  let measureP2 = null;
+  let lastPMat = null;
+  let lastVMat = null;
 
   // Clipping Planes State
   const clipPlanes = {
@@ -377,6 +405,8 @@ canvas#glcanvas { width: 100%; height: 100%; display: block; }
   function render() {
     canvas.width = canvas.clientWidth * window.devicePixelRatio;
     canvas.height = canvas.clientHeight * window.devicePixelRatio;
+    overlay.width = overlay.clientWidth * window.devicePixelRatio;
+    overlay.height = overlay.clientHeight * window.devicePixelRatio;
     gl.viewport(0, 0, canvas.width, canvas.height);
 
     gl.enable(gl.DEPTH_TEST);
@@ -423,6 +453,165 @@ canvas#glcanvas { width: 100%; height: 100%; display: block; }
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, g.ibo);
       gl.drawElements(wireframeMode ? gl.LINES : gl.TRIANGLES, g.count, gl.UNSIGNED_SHORT, 0);
     }
+
+    lastPMat = projMatrix;
+    lastVMat = viewMatrix;
+    drawOverlay(projMatrix, viewMatrix);
+  }
+
+  function worldToScreen(p, pMat, vMat) {
+    if (!pMat || !vMat) return null;
+    const x = p[0], y = p[1], z = p[2];
+    const vx = vMat[0]*x + vMat[4]*y + vMat[8]*z + vMat[12];
+    const vy = vMat[1]*x + vMat[5]*y + vMat[9]*z + vMat[13];
+    const vz = vMat[2]*x + vMat[6]*y + vMat[10]*z + vMat[14];
+    const vw = vMat[3]*x + vMat[7]*y + vMat[11]*z + vMat[15];
+
+    const cx = pMat[0]*vx + pMat[4]*vy + pMat[8]*vz + pMat[12]*vw;
+    const cy = pMat[1]*vx + pMat[5]*vy + pMat[9]*vz + pMat[13]*vw;
+    const cz = pMat[2]*vx + pMat[6]*vy + pMat[10]*vz + pMat[14]*vw;
+    const cw = pMat[3]*vx + pMat[7]*vy + pMat[11]*vz + pMat[15]*vw;
+
+    if (cw <= 0.001) return null;
+    const ndcX = cx / cw;
+    const ndcY = cy / cw;
+    if (ndcX < -1.5 || ndcX > 1.5 || ndcY < -1.5 || ndcY > 1.5) return null;
+
+    return [
+      (ndcX * 0.5 + 0.5) * overlay.width,
+      (1.0 - (ndcY * 0.5 + 0.5)) * overlay.height
+    ];
+  }
+
+  function drawOverlay(pMat, vMat) {
+    const ctx = overlay.getContext('2d');
+    ctx.clearRect(0, 0, overlay.width, overlay.height);
+
+    if (modelData.grids && modelData.grids.length > 0) {
+      ctx.save();
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = 'rgba(0, 173, 181, 0.5)';
+      ctx.setLineDash([6, 6]);
+      ctx.fillStyle = '#00adb5';
+      ctx.font = 'bold 11px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+
+      for (const g of modelData.grids) {
+        const s = worldToScreen(g.start, pMat, vMat);
+        const e = worldToScreen(g.end, pMat, vMat);
+        if (s && e) {
+          ctx.beginPath();
+          ctx.moveTo(s[0], s[1]);
+          ctx.lineTo(e[0], e[1]);
+          ctx.stroke();
+
+          ctx.setLineDash([]);
+          ctx.beginPath();
+          ctx.arc(s[0], s[1], 10, 0, Math.PI * 2);
+          ctx.fillStyle = '#111';
+          ctx.fill();
+          ctx.strokeStyle = '#00adb5';
+          ctx.stroke();
+          ctx.fillStyle = '#00adb5';
+          ctx.fillText(g.name, s[0], s[1]);
+
+          ctx.beginPath();
+          ctx.arc(e[0], e[1], 10, 0, Math.PI * 2);
+          ctx.fillStyle = '#111';
+          ctx.fill();
+          ctx.stroke();
+          ctx.fillStyle = '#00adb5';
+          ctx.fillText(g.name, e[0], e[1]);
+          ctx.setLineDash([6, 6]);
+        }
+      }
+      ctx.restore();
+    }
+
+    if (measureP1) {
+      const s1 = worldToScreen(measureP1, pMat, vMat);
+      if (s1) {
+        ctx.beginPath();
+        ctx.arc(s1[0], s1[1], 5, 0, Math.PI * 2);
+        ctx.fillStyle = '#ff922b';
+        ctx.fill();
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+    }
+    if (measureP1 && measureP2) {
+      const s1 = worldToScreen(measureP1, pMat, vMat);
+      const s2 = worldToScreen(measureP2, pMat, vMat);
+      if (s1 && s2) {
+        ctx.beginPath();
+        ctx.arc(s2[0], s2[1], 5, 0, Math.PI * 2);
+        ctx.fillStyle = '#ff922b';
+        ctx.fill();
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(s1[0], s1[1]);
+        ctx.lineTo(s2[0], s2[1]);
+        ctx.strokeStyle = '#ffa94d';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([4, 4]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        const midX = (s1[0] + s2[0]) * 0.5;
+        const midY = (s1[1] + s2[1]) * 0.5;
+        const dx = measureP2[0] - measureP1[0];
+        const dy = measureP2[1] - measureP1[1];
+        const dz = measureP2[2] - measureP1[2];
+        const d = Math.hypot(dx, dy, dz);
+
+        ctx.fillStyle = 'rgba(20,20,20,0.85)';
+        const text = `${d.toFixed(2)} m`;
+        ctx.font = 'bold 12px sans-serif';
+        const tw = ctx.measureText(text).width;
+        ctx.fillRect(midX - tw / 2 - 4, midY - 10, tw + 8, 20);
+        ctx.strokeStyle = '#ffa94d';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(midX - tw / 2 - 4, midY - 10, tw + 8, 20);
+        ctx.fillStyle = '#fff';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(text, midX, midY);
+      }
+    }
+  }
+
+  function pickPoint(clientX, clientY) {
+    const rect = canvas.getBoundingClientRect();
+    const mx = (clientX - rect.left) * window.devicePixelRatio;
+    const my = (clientY - rect.top) * window.devicePixelRatio;
+
+    let bestDist = 40 * window.devicePixelRatio;
+    let bestPt = null;
+
+    for (let elIdx = 0; elIdx < modelData.elements.length; elIdx++) {
+      const elem = modelData.elements[elIdx];
+      const v = elem.vertices;
+      if (!v) continue;
+      for (let i = 0; i < v.length; i += 3) {
+        const pt = [v[i], v[i+1], v[i+2]];
+        pt.elemIdx = elIdx;
+        const sp = worldToScreen(pt, lastPMat, lastVMat);
+        if (sp) {
+          const d = Math.hypot(sp[0] - mx, sp[1] - my);
+          if (d < bestDist) {
+            bestDist = d;
+            bestPt = pt;
+          }
+        }
+      }
+    }
+
+    return bestPt || [camTarget[0], camTarget[1], camTarget[2]];
   }
 
   // Mouse / Orbit controls
@@ -508,6 +697,66 @@ canvas#glcanvas { width: 100%; height: 100%; display: block; }
   document.getElementById('clip-y-val').oninput = e => { clipPlanes.yVal = parseFloat(e.target.value); render(); };
   document.getElementById('clip-z-en').onchange = e => { clipPlanes.zEn = e.target.checked; render(); };
   document.getElementById('clip-z-val').oninput = e => { clipPlanes.zVal = parseFloat(e.target.value); render(); };
+
+  // Measure & Click Interaction
+  canvas.addEventListener('click', e => {
+    if (Math.abs(e.clientX - lastMouseX) > 3 || Math.abs(e.clientY - lastMouseY) > 3) return;
+
+    if (measureMode) {
+      const pt = pickPoint(e.clientX, e.clientY);
+      if (!measureP1) {
+        measureP1 = pt;
+        document.getElementById('measure-status').textContent = 'Click second point';
+      } else {
+        measureP2 = pt;
+        const dx = measureP2[0] - measureP1[0];
+        const dy = measureP2[1] - measureP1[1];
+        const dz = measureP2[2] - measureP1[2];
+        const dist = Math.hypot(dx, dy, dz);
+        const horiz = Math.hypot(dx, dy);
+        const pitch = dist > 1e-6 ? Math.asin(Math.max(-1, Math.min(1, dz / dist))) * 180 / Math.PI : 0;
+
+        document.getElementById('measure-status').textContent = 'Measurement complete:';
+        document.getElementById('measure-results').style.display = 'block';
+        document.getElementById('m-dist').textContent = `${dist.toFixed(3)} m`;
+        document.getElementById('m-horiz').textContent = `${horiz.toFixed(3)} m`;
+        document.getElementById('m-deltas').textContent = `${dx.toFixed(2)} / ${dy.toFixed(2)} / ${dz.toFixed(2)} m`;
+        document.getElementById('m-pitch').textContent = `${pitch.toFixed(1)}°`;
+      }
+      render();
+      return;
+    }
+
+    const pt = pickPoint(e.clientX, e.clientY);
+    if (pt && pt.elemIdx !== undefined) {
+      showProperties(pt.elemIdx);
+      const treeNode = document.querySelector(`.tree-node[data-index="${pt.elemIdx}"]`);
+      if (treeNode) {
+        document.querySelectorAll('.tree-node').forEach(n => n.classList.remove('selected'));
+        treeNode.classList.add('selected');
+        treeNode.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    }
+  });
+
+  document.getElementById('btn-measure').onclick = function() {
+    measureMode = !measureMode;
+    this.classList.toggle('active', measureMode);
+    document.getElementById('measure-panel').style.display = measureMode ? 'block' : 'none';
+    if (!measureMode) {
+      measureP1 = null; measureP2 = null;
+      document.getElementById('measure-results').style.display = 'none';
+      document.getElementById('measure-status').textContent = 'Click 2 points to measure';
+    }
+    render();
+  };
+
+  document.getElementById('measure-clear').onclick = () => {
+    measureP1 = null; measureP2 = null;
+    document.getElementById('measure-results').style.display = 'none';
+    document.getElementById('measure-status').textContent = 'Click 2 points to measure';
+    render();
+  };
 
   // Element Selection & Property Inspector
   function showProperties(index) {
@@ -763,6 +1012,29 @@ canvas#glcanvas { width: 100%; height: 100%; display: block; }
             totalVerts += mesh.Vertices.Count;
         }
         writer.WriteEndArray(); // elements
+
+        // Grids
+        if (options.IncludeGrids && options.GridSystem is not null && options.GridSystem.Axes.Count > 0)
+        {
+            writer.WriteStartArray("grids");
+            foreach (var axis in options.GridSystem.Axes)
+            {
+                writer.WriteStartObject();
+                writer.WriteString("name", axis.Tag);
+                writer.WriteStartArray("start");
+                writer.WriteNumberValue(axis.Start.X);
+                writer.WriteNumberValue(axis.Start.Y);
+                writer.WriteNumberValue(axis.Start.Z);
+                writer.WriteEndArray();
+                writer.WriteStartArray("end");
+                writer.WriteNumberValue(axis.End.X);
+                writer.WriteNumberValue(axis.End.Y);
+                writer.WriteNumberValue(axis.End.Z);
+                writer.WriteEndArray();
+                writer.WriteEndObject();
+            }
+            writer.WriteEndArray();
+        }
 
         writer.WriteEndObject();
         writer.Flush();

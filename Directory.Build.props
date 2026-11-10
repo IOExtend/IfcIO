@@ -14,7 +14,7 @@
   </PropertyGroup>
 
   <PropertyGroup>
-    <Version>0.8.0</Version>
+    <Version>0.9.0</Version>
     <Authors>mahach666</Authors>
     <Copyright>Copyright (c) 2026 IOExtend</Copyright>
     <Product>IfcIO</Product>
@@ -24,7 +24,7 @@
     <PackageProjectUrl>https://github.com/IOExtend/IfcIO</PackageProjectUrl>
     <RepositoryUrl>https://github.com/IOExtend/IfcIO</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
-    <PackageTags>ifc;ifc2x3;ifc4;step;iso-10303-21;bim;cad;brep;tessellation;glb;gltf;obj;ifczip;bcf;bcfzip;csg;mep;ids;ifcpatch;ifcselector;ifccsv;clash;diff;viewer;webgl;html-viewer;buildingsmart</PackageTags>
+    <PackageTags>ifc;ifc2x3;ifc4;step;iso-10303-21;bim;cad;brep;tessellation;glb;gltf;obj;ifczip;bcf;bcfzip;csg;mep;ids;ifcpatch;ifcselector;ifccsv;clash;diff;viewer;webgl;html-viewer;grids;measure;clash-grouping;buildingsmart</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageIcon>icon.png</PackageIcon>
   </PropertyGroup>

@@ -260,6 +260,7 @@ public class IfcElement
     public string IfcType { get; set; } = "IFCBUILDINGELEMENTPROXY";
     public string? GlobalId { get; set; }
     public string? Tag { get; set; }
+    public string? GridLocation { get; set; }
 
     public IfcTypeProduct? TypeProduct { get; set; }
     public IfcMesh? Mesh { get; set; }

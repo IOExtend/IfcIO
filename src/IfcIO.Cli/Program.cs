@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using IfcIO.Clash;
 using IfcIO.Core;
 using IfcIO.Model;
 using IfcIO.Schema;
@@ -79,6 +80,8 @@ Commands:
 
 Clash & Diff Options:
   --tolerance <meters>  Distance tolerance in meters (clash clearance or diff geometric threshold)
+  --group <mode>        Group clashes: proximity, element, storey, grid
+  --radius <meters>     Cluster radius in meters for proximity grouping (default: 1.0)
   --bcf <path.bcfzip>   Export clash or diff issues directly to buildingSMART BCF 2.1 archive
   --selector-a <query>  Filter Model A elements for clash detection (e.g. 'IfcWall, IfcColumn')
   --selector-b <query>  Filter Model B elements for clash detection (e.g. 'IfcFlowSegment')
@@ -86,6 +89,9 @@ Clash & Diff Options:
   -o, --output <path>   Output JSON report or HTML viewer file path
 
 Patch Options:
+  --recipe <name>       Apply named patch recipe: migrate, scale, offset, purge, reset
+  --scale <factor>      Uniformly scale model geometry (e.g. 0.001 to convert mm to m)
+  --migrate <schema>    Migrate model schema version (ifc2x3 or ifc4)
   --purge               Remove empty/duplicate property sets, quantity sets, and empty storeys
   --reset-coords        Shift large UTM coordinates to local origin (0,0,0) to prevent jitter
   --offset <x,y,z>      Translate model geometry by given coordinate offset
@@ -93,6 +99,8 @@ Patch Options:
   -o, --output <path>   Output file path for patched IFC model
 
 Options:
+  --grids <path.xml>    Load spatial grid system from XML (.xml)
+  --export-grids <path> Export extracted or loaded grid system to XML (.xml)
   --glb <path>          Output binary glTF 2.0 file (.glb)
   --obj <path>          Output Wavefront OBJ file (.obj)
   --ifc <path>          Output IFC STEP physical file (.ifc)
@@ -634,10 +642,13 @@ Examples:
             return 1;
         }
 
-        bool purge = args.Contains("--purge", StringComparer.OrdinalIgnoreCase);
-        bool resetCoords = args.Contains("--reset-coords", StringComparer.OrdinalIgnoreCase);
+        string? recipe = GetOptionValue(args, "--recipe");
+        bool purge = args.Contains("--purge", StringComparer.OrdinalIgnoreCase) || string.Equals(recipe, "purge", StringComparison.OrdinalIgnoreCase);
+        bool resetCoords = args.Contains("--reset-coords", StringComparer.OrdinalIgnoreCase) || string.Equals(recipe, "reset", StringComparison.OrdinalIgnoreCase);
         string? extractQuery = GetOptionValue(args, "--extract");
         string? offsetStr = GetOptionValue(args, "--offset");
+        string? scaleStr = GetOptionValue(args, "--scale");
+        string? schemaStr = GetOptionValue(args, "--migrate") ?? (string.Equals(recipe, "migrate", StringComparison.OrdinalIgnoreCase) ? GetOptionValue(args, "--schema") : null);
 
         var sw = Stopwatch.StartNew();
         var model = IfcModel.Open(inputPath);
@@ -677,6 +688,19 @@ Examples:
                 model.OffsetCoordinates(new Geometry.IfcVector3(ox, oy, oz));
                 Console.WriteLine($"  * Applied manual offset: ({ox:F3}, {oy:F3}, {oz:F3}) m.");
             }
+        }
+
+        if (!string.IsNullOrEmpty(scaleStr) && double.TryParse(scaleStr, NumberStyles.Float, CultureInfo.InvariantCulture, out double scaleFactor))
+        {
+            Patch.IfcPatch.ScaleModel(model, scaleFactor);
+            Console.WriteLine($"  * Scaled model vertices by factor: {scaleFactor:G}");
+        }
+
+        if (!string.IsNullOrEmpty(schemaStr))
+        {
+            var targetSchema = schemaStr.Contains('4') ? IfcSchema.Ifc4 : IfcSchema.Ifc2x3;
+            Patch.IfcPatch.MigrateSchema(model, targetSchema);
+            Console.WriteLine($"  * Migrated model schema to: {targetSchema}");
         }
 
         model.Save(outputPath);
@@ -903,6 +927,53 @@ Examples:
             report = modelA.DetectClashes(options);
         }
 
+        string? gridsPath = GetOptionValue(args, "--grids");
+        if (!string.IsNullOrEmpty(gridsPath) && File.Exists(gridsPath))
+        {
+            var gridSystem = Grids.IfcGridSystem.LoadXml(gridsPath);
+            modelA.GridSystem = gridSystem;
+            modelA.AssignGridLocations(gridSystem);
+            report.AssignGridLocations(gridSystem);
+            Console.WriteLine($"  * Loaded grid system '{gridSystem.Name}' ({gridSystem.Axes.Count} axes). Assigned grid locations to clashes.");
+        }
+        else
+        {
+            var extractedGrids = modelA.ExtractGridSystem();
+            if (extractedGrids.Axes.Count > 0)
+            {
+                report.AssignGridLocations(extractedGrids);
+            }
+        }
+
+        string? groupMode = GetOptionValue(args, "--group") ?? GetOptionValue(args, "--clash-group");
+        string? radiusStr = GetOptionValue(args, "--radius") ?? GetOptionValue(args, "--clash-radius");
+        double radius = 1.0;
+        if (!string.IsNullOrEmpty(radiusStr) && double.TryParse(radiusStr, NumberStyles.Float, CultureInfo.InvariantCulture, out double r))
+        {
+            radius = r;
+        }
+
+        if (!string.IsNullOrEmpty(groupMode))
+        {
+            int groupCount = groupMode.ToLowerInvariant() switch
+            {
+                "proximity" => report.GroupByProximity(radius),
+                "element" or "elements" => report.GroupByPrimaryElement(),
+                "storey" or "storeys" or "level" => report.GroupByStorey(modelA),
+                "grid" or "grids" => report.GroupByGrid(),
+                _ => 0
+            };
+            Console.WriteLine($"  * Grouped clashes into {groupCount} groups using mode '{groupMode}'.");
+        }
+
+        string? exportGridsPath = GetOptionValue(args, "--export-grids");
+        if (!string.IsNullOrEmpty(exportGridsPath))
+        {
+            var grids = modelA.GridSystem ?? modelA.ExtractGridSystem();
+            grids.SaveXml(exportGridsPath);
+            Console.WriteLine($"  * Exported grid system '{grids.Name}' ({grids.Axes.Count} axes) to '{exportGridsPath}'.");
+        }
+
         Console.ForegroundColor = report.TotalClashesCount > 0 ? ConsoleColor.Yellow : ConsoleColor.Green;
         Console.WriteLine($"Clash detection completed: {report.TotalClashesCount} clashes found in {report.Elapsed.TotalMilliseconds:F0} ms.");
         Console.ResetColor();
@@ -1006,6 +1077,25 @@ Examples:
 
         var sw = Stopwatch.StartNew();
         var model = IfcModel.Open(inputPath);
+
+        string? gridsPath = GetOptionValue(args, "--grids");
+        if (!string.IsNullOrEmpty(gridsPath) && File.Exists(gridsPath))
+        {
+            model.GridSystem = Grids.IfcGridSystem.LoadXml(gridsPath);
+        }
+        else if (model.GridSystem is null)
+        {
+            model.ExtractGridSystem();
+        }
+
+        string? exportGridsPath = GetOptionValue(args, "--export-grids");
+        if (!string.IsNullOrEmpty(exportGridsPath))
+        {
+            var grids = model.GridSystem ?? model.ExtractGridSystem();
+            grids.SaveXml(exportGridsPath);
+            Console.WriteLine($"Grid system exported to '{exportGridsPath}'.");
+        }
+
         model.SaveHtmlViewer(outPath, new Exporters.IfcHtmlViewerOptions { Title = title });
         sw.Stop();
 

@@ -40,6 +40,9 @@ public sealed class IfcModel
     public List<IfcGroup> Groups { get; } = [];
     public List<IfcSystem> Systems { get; } = [];
 
+    /// <summary>Spatial grid system (axes and levels) associated with the IFC model.</summary>
+    public Grids.IfcGridSystem? GridSystem { get; set; }
+
     public IEnumerable<IfcElement> AllElements => Storeys.SelectMany(s => s.Elements);
     public IEnumerable<IfcSpace> AllSpaces => Storeys.SelectMany(s => s.Spaces);
     public IEnumerable<IfcOpeningElement> AllOpenings => AllElements.SelectMany(e => e.Openings);
@@ -713,6 +716,17 @@ public sealed class IfcModel
     /// <summary>Exports the model to a standalone, interactive 3D WebGL HTML viewer (.html) with zero dependencies.</summary>
     public void SaveHtmlViewer(string path, Exporters.IfcHtmlViewerOptions? options = null) =>
         Exporters.IfcHtmlViewerExporter.Save(path, this, options);
+
+    /// <summary>Populates grid location tags across elements in this model using the attached or extracted grid system.</summary>
+    public int AssignGridLocations(Grids.IfcGridSystem? gridSystem = null)
+    {
+        var grids = gridSystem ?? GridSystem ?? ExtractGridSystem();
+        GridSystem = grids;
+        return grids.AssignGridLocations(this);
+    }
+
+    /// <summary>Automatically extracts grid axes from IFCGRID elements or metadata in this model.</summary>
+    public Grids.IfcGridSystem ExtractGridSystem() => Grids.IfcGridSystem.ExtractFromModel(this);
 
     /// <summary>Serializes the IFC model to an ISO 10303-21 STEP physical string.</summary>
     public string ToStepString(string fileName = "model.ifc")

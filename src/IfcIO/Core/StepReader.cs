@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace IfcIO.Core;
 
 /// <summary>
@@ -14,7 +16,88 @@ public sealed class StepEntity
     /// <summary>Parsed top-level arguments of the entity, respecting nested parentheses and quoted strings.</summary>
     public IReadOnlyList<string> Arguments => _arguments ??= ParseArguments(RawArgs);
 
-    private static List<string> ParseArguments(string args)
+    public string? GetString(int index)
+    {
+        if (index < 0 || index >= Arguments.Count) return null;
+        string arg = Arguments[index];
+        if (arg == "$" || arg == "*") return null;
+        if (arg.StartsWith('\'') && arg.EndsWith('\'') && arg.Length >= 2)
+        {
+            return StepWriter.Unescape(arg[1..^1]);
+        }
+        return StepWriter.Unescape(arg);
+    }
+
+    public int? GetRef(int index)
+    {
+        if (index < 0 || index >= Arguments.Count) return null;
+        string arg = Arguments[index];
+        if (arg.StartsWith('#') && int.TryParse(arg.AsSpan(1), NumberStyles.Integer, CultureInfo.InvariantCulture, out int refId))
+        {
+            return refId;
+        }
+        return null;
+    }
+
+    public List<int> GetRefList(int index)
+    {
+        var result = new List<int>();
+        if (index < 0 || index >= Arguments.Count) return result;
+        string arg = Arguments[index];
+        if (!arg.StartsWith('(') || !arg.EndsWith(')')) return result;
+
+        string inner = arg[1..^1];
+        foreach (var item in ParseArguments(inner))
+        {
+            if (item.StartsWith('#') && int.TryParse(item.AsSpan(1), NumberStyles.Integer, CultureInfo.InvariantCulture, out int refId))
+            {
+                result.Add(refId);
+            }
+        }
+        return result;
+    }
+
+    public double? GetReal(int index)
+    {
+        if (index < 0 || index >= Arguments.Count) return null;
+        string arg = Arguments[index];
+        if (arg == "$" || arg == "*") return null;
+        if (double.TryParse(arg, NumberStyles.Float, CultureInfo.InvariantCulture, out double val))
+        {
+            return val;
+        }
+        return null;
+    }
+
+    public int? GetInt(int index)
+    {
+        if (index < 0 || index >= Arguments.Count) return null;
+        string arg = Arguments[index];
+        if (arg == "$" || arg == "*") return null;
+        if (int.TryParse(arg, NumberStyles.Integer, CultureInfo.InvariantCulture, out int val))
+        {
+            return val;
+        }
+        return null;
+    }
+
+    public bool? GetBool(int index)
+    {
+        if (index < 0 || index >= Arguments.Count) return null;
+        string arg = Arguments[index];
+        if (arg.Equals(".T.", StringComparison.OrdinalIgnoreCase)) return true;
+        if (arg.Equals(".F.", StringComparison.OrdinalIgnoreCase)) return false;
+        return null;
+    }
+
+    public string? GetRaw(int index)
+    {
+        if (index < 0 || index >= Arguments.Count) return null;
+        string arg = Arguments[index];
+        return (arg == "$" || arg == "*") ? null : arg;
+    }
+
+    public static List<string> ParseArguments(string args)
     {
         var result = new List<string>();
         if (string.IsNullOrWhiteSpace(args)) return result;
@@ -86,10 +169,13 @@ public sealed class StepFile
             }
         }
     }
+
+    /// <summary>Finds an entity by its #ID, or null if not found.</summary>
+    public StepEntity? Find(int? id) => id.HasValue && Entities.TryGetValue(id.Value, out var e) ? e : null;
 }
 
 /// <summary>
-/// Fast ISO 10303-21 STEP physical file reader.
+/// Fast ISO 10303-21 STEP physical file reader with multi-line entity support.
 /// </summary>
 public static class StepReader
 {
@@ -103,13 +189,15 @@ public static class StepReader
     public static StepFile Read(TextReader reader)
     {
         var file = new StepFile();
-        string? line;
+        string? rawLine;
         bool inHeader = false;
         bool inData = false;
 
-        while ((line = reader.ReadLine()) is not null)
+        var statementBuilder = new System.Text.StringBuilder(256);
+
+        while ((rawLine = reader.ReadLine()) is not null)
         {
-            line = line.Trim();
+            string line = rawLine.Trim();
             if (line.Length == 0) continue;
 
             if (line.StartsWith("HEADER;", StringComparison.OrdinalIgnoreCase))
@@ -130,6 +218,7 @@ public static class StepReader
             {
                 inHeader = false;
                 inData = false;
+                statementBuilder.Clear();
                 continue;
             }
 
@@ -139,7 +228,17 @@ public static class StepReader
             }
             else if (inData)
             {
-                ParseDataLine(line, file);
+                statementBuilder.Append(line);
+                if (line.EndsWith(';'))
+                {
+                    string fullStatement = statementBuilder.ToString();
+                    statementBuilder.Clear();
+                    ParseDataStatement(fullStatement, file);
+                }
+                else
+                {
+                    statementBuilder.Append(' ');
+                }
             }
         }
 
@@ -186,26 +285,28 @@ public static class StepReader
         }
     }
 
-    private static void ParseDataLine(string line, StepFile file)
+    private static void ParseDataStatement(string statement, StepFile file)
     {
-        if (!line.StartsWith('#')) return;
+        statement = statement.Trim();
+        if (statement.EndsWith(';')) statement = statement[..^1].Trim();
+        if (!statement.StartsWith('#')) return;
 
-        int eqIdx = line.IndexOf('=');
+        int eqIdx = statement.IndexOf('=');
         if (eqIdx <= 1) return;
 
-        if (!int.TryParse(line.AsSpan(1, eqIdx - 1), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int id))
+        if (!int.TryParse(statement.AsSpan(1, eqIdx - 1), NumberStyles.Integer, CultureInfo.InvariantCulture, out int id))
         {
             return;
         }
 
-        int openParen = line.IndexOf('(', eqIdx);
+        int openParen = statement.IndexOf('(', eqIdx);
         if (openParen <= eqIdx) return;
 
-        int closeParen = line.LastIndexOf(')');
+        int closeParen = statement.LastIndexOf(')');
         if (closeParen <= openParen) return;
 
-        string type = line[(eqIdx + 1)..openParen].Trim();
-        string rawArgs = line[(openParen + 1)..closeParen];
+        string type = statement[(eqIdx + 1)..openParen].Trim();
+        string rawArgs = statement[(openParen + 1)..closeParen];
 
         file.Entities[id] = new StepEntity
         {

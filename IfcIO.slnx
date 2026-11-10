@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/IfcIO/IfcIO.csproj" />
+    <Project Path="src/IfcIO.Cli/IfcIO.Cli.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/IfcIO.Tests/IfcIO.Tests.csproj" />

@@ -1,5 +1,8 @@
 using System.Globalization;
+using System.IO.Compression;
+using System.Text;
 using IfcIO.Core;
+using IfcIO.Exporters;
 using IfcIO.Geometry;
 using IfcIO.Model;
 using IfcIO.Schema;
@@ -9,7 +12,8 @@ namespace IfcIO;
 /// <summary>
 /// Top-level in-memory IFC BIM model.
 /// Manages spatial hierarchy (Project, Site, Building, Storeys), geometry meshes,
-/// materials, property sets, and serialization to ISO 10303-21 STEP physical files.
+/// materials, property sets, and serialization to ISO 10303-21 STEP physical files (.ifc, .ifczip),
+/// binary glTF 2.0 (.glb), and Wavefront OBJ (.obj).
 /// </summary>
 public sealed class IfcModel
 {
@@ -25,8 +29,12 @@ public sealed class IfcModel
     public string Organization { get; set; } = "IOExtend";
     public string Application { get; set; } = "IfcIO";
 
+    /// <summary>Whether to use modern IfcTriangulatedFaceSet for IFC4 exports (60% smaller files, faster).</summary>
+    public bool UseTessellationInIfc4 { get; set; } = true;
+
     public List<IfcBuildingStorey> Storeys { get; } = [];
     public List<IfcMaterial> Materials { get; } = [];
+    public List<IfcTypeProduct> TypeProducts { get; } = [];
 
     public IEnumerable<IfcElement> AllElements => Storeys.SelectMany(s => s.Elements);
 
@@ -52,6 +60,21 @@ public sealed class IfcModel
         var storey = new IfcBuildingStorey { Name = name, Elevation = elevation };
         Storeys.Add(storey);
         return storey;
+    }
+
+    /// <summary>Gets or creates a reusable IFC type definition object.</summary>
+    public IfcTypeProduct GetOrCreateType(string typeName, string? ifcType = null)
+    {
+        var existing = TypeProducts.Find(t => t.Name.Equals(typeName, StringComparison.OrdinalIgnoreCase));
+        if (existing is not null) return existing;
+
+        var type = new IfcTypeProduct
+        {
+            Name = typeName,
+            IfcType = ifcType ?? DeriveTypeProduct(typeName),
+        };
+        TypeProducts.Add(type);
+        return type;
     }
 
     /// <summary>Adds an element to the specified storey (or the first storey by default).</summary>
@@ -94,22 +117,51 @@ public sealed class IfcModel
         return element;
     }
 
-    /// <summary>Serializes the IFC model to a physical STEP file on disk.</summary>
+    /// <summary>Serializes the IFC model to a file on disk (.ifc or .ifczip).</summary>
     public void Save(string path)
     {
         ArgumentNullException.ThrowIfNull(path);
+        if (path.EndsWith(".ifczip", StringComparison.OrdinalIgnoreCase))
+        {
+            SaveZip(path);
+            return;
+        }
+
         using var fs = File.Create(path);
-        using var writer = new StreamWriter(fs, System.Text.Encoding.UTF8, bufferSize: 65536);
+        using var writer = new StreamWriter(fs, Encoding.UTF8, bufferSize: 65536);
         Save(writer, Path.GetFileName(path));
+    }
+
+    /// <summary>Serializes the IFC model to a compressed PKZip (.ifczip) archive file on disk.</summary>
+    public void SaveZip(string path)
+    {
+        ArgumentNullException.ThrowIfNull(path);
+        string innerName = Path.GetFileNameWithoutExtension(path) + ".ifc";
+
+        using var fs = File.Create(path);
+        using var zip = new ZipArchive(fs, ZipArchiveMode.Create);
+        var entry = zip.CreateEntry(innerName, CompressionLevel.Optimal);
+        using var entryStream = entry.Open();
+        using var writer = new StreamWriter(entryStream, Encoding.UTF8, bufferSize: 65536);
+        Save(writer, innerName);
     }
 
     /// <summary>Serializes the IFC model to a <see cref="Stream"/> in ISO 10303-21 format.</summary>
     public void Save(Stream stream, string fileName = "model.ifc")
     {
         ArgumentNullException.ThrowIfNull(stream);
-        using var writer = new StreamWriter(stream, System.Text.Encoding.UTF8, bufferSize: 65536, leaveOpen: true);
+        using var writer = new StreamWriter(stream, Encoding.UTF8, bufferSize: 65536, leaveOpen: true);
         Save(writer, fileName);
     }
+
+    /// <summary>Exports the model to binary glTF 2.0 (.glb) format.</summary>
+    public void SaveGlb(string path) => IfcGlbExporter.Save(this, path);
+
+    /// <summary>Exports the model to binary glTF 2.0 (.glb) stream.</summary>
+    public void SaveGlb(Stream stream) => IfcGlbExporter.Write(this, stream);
+
+    /// <summary>Exports the model to Wavefront OBJ format (.obj + .mtl).</summary>
+    public void SaveObj(string path) => IfcObjExporter.Save(this, path);
 
     /// <summary>Serializes the IFC model to a <see cref="TextWriter"/> in ISO 10303-21 format.</summary>
     public void Save(TextWriter writer, string fileName = "model.ifc")
@@ -183,8 +235,21 @@ public sealed class IfcModel
             GetOrCreateSurfaceStyle(w, mat, styleCache);
         }
 
-        // 5. Storeys & Elements
+        // 5. Type Products
+        var typeIdMap = new Dictionary<IfcTypeProduct, int>();
+        foreach (var type in TypeProducts)
+        {
+            string typeGuid = type.GlobalId ?? IfcGuid.NewGuid();
+            int typeEntityId = w.Add(type.IfcType,
+                $"{StepWriter.Str(typeGuid)},{StepWriter.Ref(ownerHistoryId)},{StepWriter.Str(type.Name)},$,$,$,$,{StepWriter.Str(type.Tag ?? type.Name)}");
+            typeIdMap[type] = typeEntityId;
+        }
+
+        // 6. Storeys & Elements
         var storeyIds = new List<int>();
+        var typeToElementsMap = new Dictionary<IfcTypeProduct, List<int>>();
+
+        bool useTessellation = (Schema == IfcSchema.Ifc4 && UseTessellationInIfc4);
 
         for (int sIdx = 0; sIdx < Storeys.Count; sIdx++)
         {
@@ -213,15 +278,27 @@ public sealed class IfcModel
                         styleId = GetOrCreateSurfaceStyle(w, element.Material, styleCache);
                     }
 
-                    int brepId = WriteMeshFacetedBrep(w, element.Mesh.Vertices, element.Mesh.Indices);
+                    int geomId;
+                    string repType;
+
+                    if (useTessellation)
+                    {
+                        geomId = WriteMeshTriangulatedFaceSet(w, element.Mesh.Vertices, element.Mesh.Indices);
+                        repType = "Tessellation";
+                    }
+                    else
+                    {
+                        geomId = WriteMeshFacetedBrep(w, element.Mesh.Vertices, element.Mesh.Indices);
+                        repType = "Brep";
+                    }
 
                     if (styleId.HasValue)
                     {
-                        w.Add("IFCSTYLEDITEM", $"{StepWriter.Ref(brepId)},({StepWriter.Ref(styleId.Value)}),{StepWriter.Str(element.Material?.Name)}");
+                        w.Add("IFCSTYLEDITEM", $"{StepWriter.Ref(geomId)},({StepWriter.Ref(styleId.Value)}),{StepWriter.Str(element.Material?.Name)}");
                     }
 
                     int shapeRepId = w.Add("IFCSHAPEREPRESENTATION",
-                        $"{StepWriter.Ref(bodySubContextId)},'Body','Brep',({StepWriter.Ref(brepId)})");
+                        $"{StepWriter.Ref(bodySubContextId)},'Body',{StepWriter.Str(repType)},({StepWriter.Ref(geomId)})");
                     prodShapeId = w.Add("IFCPRODUCTDEFINITIONSHAPE",
                         $"$,$,({StepWriter.Ref(shapeRepId)})");
                 }
@@ -233,6 +310,17 @@ public sealed class IfcModel
 
                 int elemId = AddIfcProduct(w, ifcType, elemGuid, ownerHistoryId, element.Name, prodPlacementId, prodShapeId, element.Tag ?? element.Id.ToString(CultureInfo.InvariantCulture));
                 storeyElementIds.Add(elemId);
+
+                // Type relation tracking
+                if (element.TypeProduct is not null)
+                {
+                    if (!typeToElementsMap.TryGetValue(element.TypeProduct, out var list))
+                    {
+                        list = [];
+                        typeToElementsMap[element.TypeProduct] = list;
+                    }
+                    list.Add(elemId);
+                }
 
                 // Property sets
                 if (element.PropertySets.Count > 0)
@@ -271,6 +359,16 @@ public sealed class IfcModel
             }
         }
 
+        // 7. RelDefinesByType
+        foreach (var (typeProduct, elemIds) in typeToElementsMap)
+        {
+            if (typeIdMap.TryGetValue(typeProduct, out int typeEntityId) && elemIds.Count > 0)
+            {
+                w.Add("IFCRELDEFINESBYTYPE",
+                    $"{StepWriter.Str(IfcGuid.NewGuid())},{StepWriter.Ref(ownerHistoryId)},$,$,{StepWriter.List(elemIds.Select(StepWriter.Ref))},{StepWriter.Ref(typeEntityId)}");
+            }
+        }
+
         if (storeyIds.Count > 0)
         {
             w.Add("IFCRELAGGREGATES",
@@ -280,17 +378,442 @@ public sealed class IfcModel
         w.WriteTo(writer, fileName, schemaStr, viewDef, Application, Organization);
     }
 
-    /// <summary>Parses an existing IFC STEP file from disk into a structured model.</summary>
+    /// <summary>Parses an existing IFC STEP file (.ifc or .ifczip) from disk into a structured model.</summary>
     public static IfcModel Open(string path)
     {
-        var step = StepReader.Read(path);
+        ArgumentNullException.ThrowIfNull(path);
+        if (path.EndsWith(".ifczip", StringComparison.OrdinalIgnoreCase))
+        {
+            using var fs = File.OpenRead(path);
+            using var zip = new ZipArchive(fs, ZipArchiveMode.Read);
+            var entry = zip.Entries.FirstOrDefault(e => e.Name.EndsWith(".ifc", StringComparison.OrdinalIgnoreCase))
+                ?? throw new InvalidDataException("The .ifczip archive does not contain an .ifc file.");
+            using var stream = entry.Open();
+            using var reader = new StreamReader(stream, Encoding.UTF8);
+            return Open(reader, Path.GetFileNameWithoutExtension(path));
+        }
+
+        using var fileStream = File.OpenRead(path);
+        using var fileReader = new StreamReader(fileStream, Encoding.UTF8);
+        return Open(fileReader, Path.GetFileNameWithoutExtension(path));
+    }
+
+    /// <summary>Parses an existing IFC STEP stream into a structured model with storeys, elements, properties, and meshes.</summary>
+    public static IfcModel Open(TextReader reader, string? modelName = null)
+    {
+        ArgumentNullException.ThrowIfNull(reader);
+
+        var step = StepReader.Read(reader);
+        var schema = (step.Schema?.Contains("IFC4", StringComparison.OrdinalIgnoreCase) == true)
+            ? IfcSchema.Ifc4
+            : IfcSchema.Ifc2x3;
+
         var model = new IfcModel
         {
-            ProjectName = Path.GetFileNameWithoutExtension(path),
-            Schema = (step.Schema?.Contains("IFC4", StringComparison.OrdinalIgnoreCase) == true) ? IfcSchema.Ifc4 : IfcSchema.Ifc2x3,
+            ProjectName = modelName ?? step.FileName ?? "Imported IFC Project",
+            Schema = schema,
         };
+        model.Storeys.Clear(); // Clear default storey
+
+        // 1. Parse Project, Building
+        var projectEntity = step.OfType("IFCPROJECT").FirstOrDefault();
+        if (projectEntity is not null)
+        {
+            model.ProjectName = projectEntity.GetString(2) ?? model.ProjectName;
+        }
+        var buildingEntity = step.OfType("IFCBUILDING").FirstOrDefault();
+        if (buildingEntity is not null)
+        {
+            model.BuildingName = buildingEntity.GetString(2) ?? model.BuildingName;
+        }
+
+        // 2. Parse Storeys
+        var storeyMap = new Dictionary<int, IfcBuildingStorey>();
+        foreach (var sEnt in step.OfType("IFCBUILDINGSTOREY"))
+        {
+            var storey = new IfcBuildingStorey
+            {
+                Name = sEnt.GetString(2) ?? $"Level {sEnt.Id}",
+                Elevation = sEnt.GetReal(9) ?? 0.0,
+                GlobalId = sEnt.GetString(0),
+            };
+            model.Storeys.Add(storey);
+            storeyMap[sEnt.Id] = storey;
+        }
+
+        if (model.Storeys.Count == 0)
+        {
+            var defStorey = new IfcBuildingStorey { Name = "Level 1", Elevation = 0.0 };
+            model.Storeys.Add(defStorey);
+        }
+
+        // 3. Parse Materials & Styles
+        var styleToMaterialMap = new Dictionary<int, IfcMaterial>();
+        foreach (var styleEnt in step.OfType("IFCSURFACESTYLE"))
+        {
+            string matName = styleEnt.GetString(0) ?? "Material";
+            var styles = styleEnt.GetRefList(2);
+            foreach (int shadingId in styles)
+            {
+                var shadingEnt = step.Find(shadingId);
+                if (shadingEnt is not null && shadingEnt.Type.Equals("IFCSURFACESTYLESHADING", StringComparison.OrdinalIgnoreCase))
+                {
+                    int? colId = shadingEnt.GetRef(0);
+                    var colEnt = step.Find(colId);
+                    if (colEnt is not null && colEnt.Type.Equals("IFCCOLOURRGB", StringComparison.OrdinalIgnoreCase))
+                    {
+                        double r = colEnt.GetReal(1) ?? 0.8;
+                        double g = colEnt.GetReal(2) ?? 0.8;
+                        double b = colEnt.GetReal(3) ?? 0.8;
+
+                        var mat = new IfcMaterial { Name = matName, R = r, G = g, B = b };
+                        styleToMaterialMap[styleEnt.Id] = mat;
+                        if (!model.Materials.Contains(mat)) model.Materials.Add(mat);
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Map styled items to materials
+        var geomToMaterialMap = new Dictionary<int, IfcMaterial>();
+        foreach (var styledItem in step.OfType("IFCSTYLEDITEM"))
+        {
+            int? geomId = styledItem.GetRef(0);
+            var styles = styledItem.GetRefList(1);
+            if (geomId.HasValue)
+            {
+                foreach (int sId in styles)
+                {
+                    if (styleToMaterialMap.TryGetValue(sId, out var mat))
+                    {
+                        geomToMaterialMap[geomId.Value] = mat;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // 4. Map Elements to Storeys
+        var elementToStoreyMap = new Dictionary<int, IfcBuildingStorey>();
+        foreach (var relSpatial in step.OfType("IFCRELCONTAINEDINSPATIALSTRUCTURE"))
+        {
+            int? structId = relSpatial.GetRef(5);
+            if (structId.HasValue && storeyMap.TryGetValue(structId.Value, out var targetStorey))
+            {
+                var elemIds = relSpatial.GetRefList(4);
+                foreach (int eId in elemIds)
+                {
+                    elementToStoreyMap[eId] = targetStorey;
+                }
+            }
+        }
+
+        // 5. Parse Property Sets
+        var psetMap = new Dictionary<int, IfcPropertySet>();
+        foreach (var psetEnt in step.OfType("IFCPROPERTYSET"))
+        {
+            string psetName = psetEnt.GetString(2) ?? "PropertySet";
+            var pset = new IfcPropertySet(psetName);
+            var propIds = psetEnt.GetRefList(4);
+
+            foreach (int pId in propIds)
+            {
+                var pValEnt = step.Find(pId);
+                if (pValEnt is not null && pValEnt.Type.Equals("IFCPROPERTYSINGLEVALUE", StringComparison.OrdinalIgnoreCase))
+                {
+                    string propName = pValEnt.GetString(0) ?? "Property";
+                    string? rawVal = pValEnt.GetRaw(2);
+                    string cleanVal = ExtractNominalValue(rawVal);
+                    pset.Add(propName, cleanVal);
+                }
+            }
+            psetMap[psetEnt.Id] = pset;
+        }
+
+        var elementPropertySets = new Dictionary<int, List<IfcPropertySet>>();
+        foreach (var relProps in step.OfType("IFCRELDEFINESBYPROPERTIES"))
+        {
+            int? psetId = relProps.GetRef(5);
+            if (psetId.HasValue && psetMap.TryGetValue(psetId.Value, out var pset))
+            {
+                var elemIds = relProps.GetRefList(4);
+                foreach (int eId in elemIds)
+                {
+                    if (!elementPropertySets.TryGetValue(eId, out var list))
+                    {
+                        list = [];
+                        elementPropertySets[eId] = list;
+                    }
+                    list.Add(pset);
+                }
+            }
+        }
+
+        // 6. Parse Elements & Meshes
+        var defaultStorey = model.Storeys[0];
+
+        foreach (var entity in step.Entities.Values)
+        {
+            if (!IsBimProductType(entity.Type)) continue;
+
+            string globalId = entity.GetString(0) ?? IfcGuid.NewGuid();
+            string name = entity.GetString(2) ?? entity.Type;
+            string? tag = entity.GetString(7);
+
+            var targetStorey = elementToStoreyMap.TryGetValue(entity.Id, out var s) ? s : defaultStorey;
+
+            var element = new IfcElement
+            {
+                Id = entity.Id,
+                Name = name,
+                IfcType = entity.Type,
+                GlobalId = globalId,
+                Tag = tag,
+            };
+
+            // Link property sets
+            if (elementPropertySets.TryGetValue(entity.Id, out var psets))
+            {
+                element.PropertySets.AddRange(psets);
+            }
+
+            // Parse Mesh Geometry
+            int? shapeDefId = entity.GetRef(6);
+            if (shapeDefId.HasValue)
+            {
+                var mesh = ParseMeshGeometry(step, shapeDefId.Value, name, geomToMaterialMap, out var mat);
+                if (mesh is not null)
+                {
+                    element.Mesh = mesh;
+                }
+                if (mat is not null)
+                {
+                    element.Material = mat;
+                }
+            }
+
+            targetStorey.Elements.Add(element);
+        }
 
         return model;
+    }
+
+    private static IfcMesh? ParseMeshGeometry(
+        StepFile step,
+        int shapeDefId,
+        string meshName,
+        Dictionary<int, IfcMaterial> geomToMaterialMap,
+        out IfcMaterial? material)
+    {
+        material = null;
+        var shapeDef = step.Find(shapeDefId);
+        if (shapeDef is null) return null;
+
+        var repIds = shapeDef.GetRefList(2);
+        foreach (int repId in repIds)
+        {
+            var repEnt = step.Find(repId);
+            if (repEnt is null || !repEnt.Type.Equals("IFCSHAPEREPRESENTATION", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var itemIds = repEnt.GetRefList(3);
+            foreach (int itemId in itemIds)
+            {
+                var itemEnt = step.Find(itemId);
+                if (itemEnt is null) continue;
+
+                if (geomToMaterialMap.TryGetValue(itemId, out var mat))
+                {
+                    material = mat;
+                }
+
+                // A. IFCFACETEDBREP
+                if (itemEnt.Type.Equals("IFCFACETEDBREP", StringComparison.OrdinalIgnoreCase))
+                {
+                    int? shellId = itemEnt.GetRef(0);
+                    var shellEnt = step.Find(shellId);
+                    if (shellEnt is null) continue;
+
+                    var vertices = new List<IfcVector3>();
+                    var indices = new List<int>();
+                    var pointIndexMap = new Dictionary<int, int>();
+
+                    var faceIds = shellEnt.GetRefList(0);
+                    foreach (int faceId in faceIds)
+                    {
+                        var faceEnt = step.Find(faceId);
+                        if (faceEnt is null) continue;
+
+                        var boundIds = faceEnt.GetRefList(0);
+                        foreach (int boundId in boundIds)
+                        {
+                            var boundEnt = step.Find(boundId);
+                            if (boundEnt is null) continue;
+
+                            int? loopId = boundEnt.GetRef(0);
+                            var loopEnt = step.Find(loopId);
+                            if (loopEnt is null || !loopEnt.Type.Equals("IFCPOLYLOOP", StringComparison.OrdinalIgnoreCase))
+                                continue;
+
+                            var ptIds = loopEnt.GetRefList(0);
+                            var faceIndices = new List<int>(ptIds.Count);
+
+                            foreach (int ptId in ptIds)
+                            {
+                                if (!pointIndexMap.TryGetValue(ptId, out int idx))
+                                {
+                                    var ptEnt = step.Find(ptId);
+                                    if (ptEnt is not null)
+                                    {
+                                        string coordStr = ptEnt.GetRaw(0) ?? string.Empty;
+                                        var coords = StepEntity.ParseArguments(coordStr.Trim('(', ')'));
+                                        double x = coords.Count > 0 && double.TryParse(coords[0], NumberStyles.Float, CultureInfo.InvariantCulture, out double cx) ? cx : 0.0;
+                                        double y = coords.Count > 1 && double.TryParse(coords[1], NumberStyles.Float, CultureInfo.InvariantCulture, out double cy) ? cy : 0.0;
+                                        double z = coords.Count > 2 && double.TryParse(coords[2], NumberStyles.Float, CultureInfo.InvariantCulture, out double cz) ? cz : 0.0;
+
+                                        idx = vertices.Count;
+                                        vertices.Add(new IfcVector3(x, y, z));
+                                        pointIndexMap[ptId] = idx;
+                                    }
+                                }
+                                faceIndices.Add(idx);
+                            }
+
+                            // Fan triangulation for convex polygons
+                            for (int i = 1; i + 1 < faceIndices.Count; i++)
+                            {
+                                indices.Add(faceIndices[0]);
+                                indices.Add(faceIndices[i]);
+                                indices.Add(faceIndices[i + 1]);
+                            }
+                        }
+                    }
+
+                    if (vertices.Count >= 3 && indices.Count >= 3)
+                    {
+                        return IfcMesh.Create(itemId, meshName, vertices, indices);
+                    }
+                }
+
+                // B. IFCTRIANGULATEDFACESET (IFC4)
+                if (itemEnt.Type.Equals("IFCTRIANGULATEDFACESET", StringComparison.OrdinalIgnoreCase))
+                {
+                    int? ptListId = itemEnt.GetRef(0);
+                    var ptListEnt = step.Find(ptListId);
+                    if (ptListEnt is null) continue;
+
+                    var vertices = new List<IfcVector3>();
+                    string rawCoords = ptListEnt.GetRaw(0) ?? string.Empty;
+
+                    // Parse point list: ((x1, y1, z1), (x2, y2, z2), ...)
+                    foreach (var tuple in StepEntity.ParseArguments(rawCoords.Trim('(', ')')))
+                    {
+                        var parts = StepEntity.ParseArguments(tuple.Trim('(', ')'));
+                        double x = parts.Count > 0 && double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out double px) ? px : 0.0;
+                        double y = parts.Count > 1 && double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out double py) ? py : 0.0;
+                        double z = parts.Count > 2 && double.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out double pz) ? pz : 0.0;
+                        vertices.Add(new IfcVector3(x, y, z));
+                    }
+
+                    var indices = new List<int>();
+                    string rawTriangles = itemEnt.GetRaw(3) ?? string.Empty;
+                    foreach (var triTuple in StepEntity.ParseArguments(rawTriangles.Trim('(', ')')))
+                    {
+                        var parts = StepEntity.ParseArguments(triTuple.Trim('(', ')'));
+                        if (parts.Count >= 3)
+                        {
+                            if (int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out int i0) &&
+                                int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out int i1) &&
+                                int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out int i2))
+                            {
+                                // STEP 1-based to 0-based
+                                indices.Add(i0 - 1);
+                                indices.Add(i1 - 1);
+                                indices.Add(i2 - 1);
+                            }
+                        }
+                    }
+
+                    if (vertices.Count >= 3 && indices.Count >= 3)
+                    {
+                        return IfcMesh.Create(itemId, meshName, vertices, indices);
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static string ExtractNominalValue(string? rawVal)
+    {
+        if (string.IsNullOrWhiteSpace(rawVal) || rawVal == "$" || rawVal == "*") return string.Empty;
+
+        int p1 = rawVal.IndexOf('(');
+        int p2 = rawVal.LastIndexOf(')');
+        if (p1 >= 0 && p2 > p1)
+        {
+            string inner = rawVal[(p1 + 1)..p2].Trim();
+            if (inner.StartsWith('\'') && inner.EndsWith('\'') && inner.Length >= 2)
+            {
+                return StepWriter.Unescape(inner[1..^1]) ?? inner[1..^1];
+            }
+            return StepWriter.Unescape(inner) ?? inner;
+        }
+
+        return StepWriter.Unescape(rawVal) ?? rawVal;
+    }
+
+    private static bool IsBimProductType(string type)
+    {
+        return type.StartsWith("IFCWALL", StringComparison.OrdinalIgnoreCase)
+            || type.StartsWith("IFCSLAB", StringComparison.OrdinalIgnoreCase)
+            || type.StartsWith("IFCCOLUMN", StringComparison.OrdinalIgnoreCase)
+            || type.StartsWith("IFCBEAM", StringComparison.OrdinalIgnoreCase)
+            || type.StartsWith("IFCWINDOW", StringComparison.OrdinalIgnoreCase)
+            || type.StartsWith("IFCDOOR", StringComparison.OrdinalIgnoreCase)
+            || type.StartsWith("IFCFOOTING", StringComparison.OrdinalIgnoreCase)
+            || type.StartsWith("IFCREINFORCINGBAR", StringComparison.OrdinalIgnoreCase)
+            || type.StartsWith("IFCSTAIR", StringComparison.OrdinalIgnoreCase)
+            || type.StartsWith("IFCRAILING", StringComparison.OrdinalIgnoreCase)
+            || type.StartsWith("IFCROOF", StringComparison.OrdinalIgnoreCase)
+            || type.StartsWith("IFCPIPESEGMENT", StringComparison.OrdinalIgnoreCase)
+            || type.StartsWith("IFCDUCTSEGMENT", StringComparison.OrdinalIgnoreCase)
+            || type.StartsWith("IFCMEMBER", StringComparison.OrdinalIgnoreCase)
+            || type.StartsWith("IFCPLATE", StringComparison.OrdinalIgnoreCase)
+            || type.StartsWith("IFCCOVERING", StringComparison.OrdinalIgnoreCase)
+            || type.StartsWith("IFCFURNISHINGELEMENT", StringComparison.OrdinalIgnoreCase)
+            || type.Equals("IFCBUILDINGELEMENTPROXY", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static int WriteMeshTriangulatedFaceSet(StepWriter w, IReadOnlyList<IfcVector3> vertices, IReadOnlyList<int> indices)
+    {
+        var coords = new StringBuilder();
+        for (int v = 0; v < vertices.Count; v++)
+        {
+            if (v > 0) coords.Append(',');
+            var pt = vertices[v];
+            coords.Append('(')
+                  .Append(StepWriter.Real(pt.X)).Append(',')
+                  .Append(StepWriter.Real(pt.Y)).Append(',')
+                  .Append(StepWriter.Real(pt.Z)).Append(')');
+        }
+
+        int pointListId = w.Add("IFCCARTESIANPOINTLIST3D", $"({coords})");
+
+        var coordIndex = new StringBuilder();
+        int triCount = indices.Count / 3;
+        for (int i = 0; i < triCount; i++)
+        {
+            if (i > 0) coordIndex.Append(',');
+            coordIndex.Append('(')
+                      .Append(indices[i * 3] + 1).Append(',')
+                      .Append(indices[i * 3 + 1] + 1).Append(',')
+                      .Append(indices[i * 3 + 2] + 1).Append(')');
+        }
+
+        return w.Add("IFCTRIANGULATEDFACESET", $"{StepWriter.Ref(pointListId)},$,.T.,({coordIndex}),$");
     }
 
     private static int WriteMeshFacetedBrep(StepWriter w, IReadOnlyList<IfcVector3> vertices, IReadOnlyList<int> indices)
@@ -406,6 +929,28 @@ public sealed class IfcModel
             return "IFCDUCTSEGMENT";
 
         return "IFCBUILDINGELEMENTPROXY";
+    }
+
+    private static string DeriveTypeProduct(string name)
+    {
+        string elemType = ClassifyElement(name);
+        return elemType switch
+        {
+            "IFCWALL" => "IFCWALLTYPE",
+            "IFCSLAB" => "IFCSLABTYPE",
+            "IFCCOLUMN" => "IFCCOLUMNTYPE",
+            "IFCBEAM" => "IFCBEAMTYPE",
+            "IFCREINFORCINGBAR" => "IFCREINFORCINGBARTYPE",
+            "IFCWINDOW" => "IFCWINDOWSTYLE",
+            "IFCDOOR" => "IFCDOORSTYLE",
+            "IFCFOOTING" => "IFCFOOTINGTYPE",
+            "IFCRAILING" => "IFCRAILINGTYPE",
+            "IFCSTAIR" => "IFCSTAIRFLIGHTTYPE",
+            "IFCROOF" => "IFCROOFTYPE",
+            "IFCPIPESEGMENT" => "IFCPIPESEGMENTTYPE",
+            "IFCDUCTSEGMENT" => "IFCDUCTSEGMENTTYPE",
+            _ => "IFCBUILDINGELEMENTPROXYTYPE",
+        };
     }
 
     private static bool ContainsAny(string text, params string[] needles)

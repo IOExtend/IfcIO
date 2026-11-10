@@ -57,6 +57,9 @@ public sealed class IfcPropertySet
     public void Add(string name, int value) => Properties.Add(IfcPropertySingleValue.FromInt(name, value));
     public void Add(string name, double value) => Properties.Add(IfcPropertySingleValue.FromReal(name, value));
     public void Add(string name, bool value) => Properties.Add(IfcPropertySingleValue.FromBool(name, value));
+
+    public string? GetValue(string propName) =>
+        Properties.Find(p => p.Name.Equals(propName, StringComparison.OrdinalIgnoreCase))?.Value;
 }
 
 /// <summary>
@@ -71,6 +74,28 @@ public sealed class IfcBuildingStorey
 }
 
 /// <summary>
+/// Represents a type definition object (e.g. IFCWALLTYPE, IFCBEAMTYPE, IFCCOLUMNTYPE, IFCSLABTYPE).
+/// </summary>
+public sealed class IfcTypeProduct
+{
+    public required string Name { get; set; }
+    public string IfcType { get; set; } = "IFCBUILDINGELEMENTPROXYTYPE";
+    public string? GlobalId { get; set; }
+    public string? Tag { get; set; }
+    public List<IfcPropertySet> PropertySets { get; } = [];
+
+    public IfcPropertySet GetOrCreatePropertySet(string name)
+    {
+        var existing = PropertySets.Find(p => p.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        if (existing is not null) return existing;
+
+        var pset = new IfcPropertySet(name);
+        PropertySets.Add(pset);
+        return pset;
+    }
+}
+
+/// <summary>
 /// Base class for physical BIM elements (Wall, Slab, Column, Beam, Proxy, etc.).
 /// </summary>
 public class IfcElement
@@ -81,6 +106,7 @@ public class IfcElement
     public string? GlobalId { get; set; }
     public string? Tag { get; set; }
 
+    public IfcTypeProduct? TypeProduct { get; set; }
     public IfcMesh? Mesh { get; set; }
     public IfcMaterial? Material { get; set; }
     public List<IfcPropertySet> PropertySets { get; } = [];

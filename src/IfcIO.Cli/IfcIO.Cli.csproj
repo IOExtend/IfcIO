@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>IfcIO.Cli</PackageId>
+    <Description>Fast, pure managed command-line tool for reading, converting, inspecting, and packaging Industry Foundation Classes (IFC) BIM models.</Description>
+    <OutputType>Exe</OutputType>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>ifcio</ToolCommandName>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <ServerGarbageCollection>true</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\IfcIO\IfcIO.csproj" />
+  </ItemGroup>
+
+</Project>

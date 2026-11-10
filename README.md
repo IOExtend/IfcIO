@@ -12,10 +12,17 @@ Built clean-room under the [IOExtend](https://github.com/IOExtend) organization 
 
 ## Features
 
-- **ISO 10303-21 Physical File Serializer & Reader (`StepWriter` / `StepReader`)**:
-  - Full support for `ISO-10303-21;` physical file exchange structure (`HEADER`, `DATA`, `ENDSEC`).
-  - Strict character escaping: standard Unicode `\X2\HHHH...\X0\` for Cyrillic and international parameter names, single quotes `''`, backslashes `\\`.
-  - Resilient tokenization and querying of STEP entities by class (`OfType<StepEntity>`).
+- **Full High-Level Model Ingestion (`IfcModel.Open`)**:
+  - Reconstructs complete spatial hierarchy (Project, Site, Building, Storeys), elements, properties, materials, and 3D meshes from any `.ifc` or `.ifczip` file.
+  - Multi-line STEP statement accumulation and quote-aware tokenization in `StepReader`.
+- **IFC4 Modern Tessellation (`IfcTriangulatedFaceSet`)**:
+  - Encodes geometry using compact `IfcTriangulatedFaceSet` and `IfcCartesianPointList3D` under representation type `'Tessellation'` for IFC4 exports (>60% smaller files).
+- **Direct 3D Exporters (glTF 2.0 & Wavefront OBJ)**:
+  - Instant conversion of any IFC model to binary glTF 2.0 (`.glb`) with PBR metallic-roughness materials and vertex normals, or Wavefront OBJ (`.obj` + `.mtl`).
+- **PKZip Compressed IFC (`.ifczip`)**:
+  - Built-in transparent compression and decompression for standard `.ifczip` archives with zero native dependencies.
+- **Cross-Platform CLI Tool (`ifcio`)**:
+  - Global .NET CLI tool (`IfcIO.Cli` on NuGet) providing `info`, `export`, `pack`, `unpack`, and `validate` commands.
 - **buildingSMART 22-Character GlobalId (`IfcGuid`)**:
   - Standard base64-like buildingSMART encoding (`0-9, A-Z, a-z, _, $`).
   - Bidirectional conversion between 128-bit `.NET Guid` and 22-character IFC GlobalId.
@@ -29,6 +36,7 @@ Built clean-room under the [IOExtend](https://github.com/IOExtend) organization 
 - **Semantic Classification & Properties**:
   - Automatic classification for standard BIM entities: `IfcWall`, `IfcSlab`, `IfcColumn`, `IfcBeam`, `IfcReinforcingBar`, `IfcWindow`, `IfcDoor`, `IfcFooting`, `IfcStair`, `IfcRailing`, `IfcRoof`, `IfcPipeSegment`, `IfcDuctSegment`, `IfcBuildingElementProxy`.
   - Property sets (`IfcPropertySet`, `IfcPropertySingleValue`) with typed values (`IfcText`, `IfcInteger`, `IfcReal`, `IfcBoolean`).
+  - Reusable Type Products (`IfcTypeProduct`) linked via `IfcRelDefinesByType`.
   - Surface styles and materials (`IfcSurfaceStyle`, `IfcSurfaceStyleShading`, `IfcColourRgb`, `IfcStyledItem`).
 - **Zero Dependencies**: Pure C# targeting `.NET 8` and `.NET 10`.
 
@@ -96,27 +104,57 @@ pset.Add("LoadBearing", true);
 pset.Add("Thickness", 200.0);
 pset.Add("FireRating", "REI 120");
 
-// Save to IFC physical file
-model.Save("Building.ifc");
+// Save to multiple formats with one call:
+model.Save("Building.ifc");          // Standard STEP file
+model.SaveZip("Building.ifczip");    // Compressed PKZip archive
+model.SaveGlb("Building.glb");       // Binary glTF 2.0 with PBR materials
+model.SaveObj("Building.obj");       // Wavefront OBJ + MTL
 ```
 
-### Parsing an Existing IFC File
+### Loading and Inspecting an IFC Model
 
 ```csharp
-using IfcIO.Core;
+using IfcIO;
 
-// Read STEP ISO-10303-21 file
-var step = StepReader.Read("Building.ifc");
+// Load an existing .ifc or .ifczip model
+var model = IfcModel.Open("Building.ifc");
 
-Console.WriteLine($"Schema:      {step.Schema}");
-Console.WriteLine($"Description: {step.Description}");
-Console.WriteLine($"Entities:    {step.Entities.Count}");
+Console.WriteLine($"Project:  {model.ProjectName}");
+Console.WriteLine($"Schema:   {model.Schema}");
+Console.WriteLine($"Storeys:  {model.Storeys.Count}");
+Console.WriteLine($"Elements: {model.AllElements.Count()}");
 
-// Query elements by IFC type
-foreach (var wall in step.OfType("IFCWALL"))
-{
-    Console.WriteLine($"Wall #{wall.Id}: {wall.RawArgs}");
-}
+// Convert directly to glTF 2.0
+model.SaveGlb("Building_Converted.glb");
+```
+
+---
+
+## Global CLI Tool (`ifcio`)
+
+Install the cross-platform command-line tool globally via NuGet:
+
+```sh
+dotnet tool install --global IfcIO.Cli
+```
+
+### CLI Commands
+
+```sh
+# Inspect model metadata, storeys, and element distribution
+ifcio info Building.ifc --report
+
+# Convert IFC to binary glTF 2.0 and Wavefront OBJ
+ifcio export Building.ifc --glb scene.glb --obj scene.obj
+
+# Compress IFC to .ifczip
+ifcio pack Building.ifc -o Building.ifczip
+
+# Extract IFC from .ifczip
+ifcio unpack Building.ifczip -o Building.ifc
+
+# Validate ISO 10303-21 structure and schema
+ifcio validate Building.ifc
 ```
 
 ---

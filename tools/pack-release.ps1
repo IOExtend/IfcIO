@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Packs release assets into artifacts: binary archives of library, source zip, NuGet packages and SHA256SUMS.txt.
+    Packs release assets into artifacts: binary archives of library, CLI archives, source zip, NuGet packages and SHA256SUMS.txt.
 #>
 param(
     [string]$Output = (Join-Path $PSScriptRoot '..\artifacts')
@@ -46,11 +46,37 @@ Copy-Item (Join-Path $root 'LICENSE') $libStage
 Copy-Item (Join-Path $root 'THIRD-PARTY-NOTICES.md') $libStage
 New-Zip $libStage (Join-Path $Output "IfcIO-$version.zip")
 
-# 2. NuGet packages
+# 2. CLI (.NET 8 Runtime)
+Write-Host "Publishing IfcIO.Cli (net8.0)..."
+$cliStage = Join-Path $stage 'cli-net8'
+Invoke-DotNet publish (Join-Path $root 'src\IfcIO.Cli\IfcIO.Cli.csproj') -c Release -f net8.0 -o $cliStage
+if (Test-Path (Join-Path $cliStage 'IfcIO.Cli.exe')) {
+    Copy-Item (Join-Path $cliStage 'IfcIO.Cli.exe') (Join-Path $cliStage 'ifcio.exe')
+    Copy-Item (Join-Path $cliStage 'IfcIO.Cli.runtimeconfig.json') (Join-Path $cliStage 'ifcio.runtimeconfig.json')
+}
+Copy-Item (Join-Path $root 'README.md') $cliStage
+Copy-Item (Join-Path $root 'LICENSE') $cliStage
+Copy-Item (Join-Path $root 'THIRD-PARTY-NOTICES.md') $cliStage
+New-Zip $cliStage (Join-Path $Output "IfcIO-Cli-$version.zip")
+
+# 3. CLI (.NET 10 Runtime)
+Write-Host "Publishing IfcIO.Cli (net10.0)..."
+$cli10Stage = Join-Path $stage 'cli-net10'
+Invoke-DotNet publish (Join-Path $root 'src\IfcIO.Cli\IfcIO.Cli.csproj') -c Release -f net10.0 -o $cli10Stage
+if (Test-Path (Join-Path $cli10Stage 'IfcIO.Cli.exe')) {
+    Copy-Item (Join-Path $cli10Stage 'IfcIO.Cli.exe') (Join-Path $cli10Stage 'ifcio.exe')
+    Copy-Item (Join-Path $cli10Stage 'IfcIO.Cli.runtimeconfig.json') (Join-Path $cli10Stage 'ifcio.runtimeconfig.json')
+}
+Copy-Item (Join-Path $root 'README.md') $cli10Stage
+Copy-Item (Join-Path $root 'LICENSE') $cli10Stage
+Copy-Item (Join-Path $root 'THIRD-PARTY-NOTICES.md') $cli10Stage
+New-Zip $cli10Stage (Join-Path $Output "IfcIO-Cli-$version-net10.0.zip")
+
+# 4. NuGet packages
 Write-Host "Packing NuGet packages..."
 Invoke-DotNet pack (Join-Path $root 'IfcIO.slnx') -c Release --no-build -o $Output
 
-# 3. Source code archive
+# 5. Source code archive
 Write-Host "Creating source code archive..."
 $sourceZip = Join-Path $Output "IfcIO-$version-source.zip"
 if (Test-Path -LiteralPath $sourceZip) { Remove-Item -LiteralPath $sourceZip }
@@ -59,7 +85,7 @@ if ($LASTEXITCODE -ne 0) { throw "git archive failed with exit code $LASTEXITCOD
 
 Remove-Item -LiteralPath $stage -Recurse -Force
 
-# 4. Checksums
+# 6. Checksums
 Write-Host "Computing SHA256..."
 $files = @(Get-ChildItem -LiteralPath $Output -File | Where-Object { $_.Extension -in '.zip', '.nupkg', '.snupkg' } | Sort-Object Name)
 $sums = $files | ForEach-Object { '{0}  {1}' -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.Name }

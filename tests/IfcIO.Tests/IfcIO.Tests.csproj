@@ -17,6 +17,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\IfcIO\IfcIO.csproj" />
+    <ProjectReference Include="..\..\src\IfcIO.Cli\IfcIO.Cli.csproj" />
   </ItemGroup>
 
 </Project>

@@ -253,15 +253,19 @@ public class IfcElement
     public IfcMesh? Mesh { get; set; }
     public IfcExtrudedAreaSolid? Solid { get; set; }
     public IfcRevolvedAreaSolid? RevolvedSolid { get; set; }
+    public IfcBooleanResult? BooleanResult { get; set; }
     public IfcMaterial? Material { get; set; }
+    public IfcMaterialLayerSetUsage? MaterialLayerSet { get; set; }
+    public IfcMaterialProfileSetUsage? MaterialProfileSet { get; set; }
+    public List<IfcDistributionPort> Ports { get; } = [];
     public List<IfcPropertySet> PropertySets { get; } = [];
     public List<IfcQuantitySet> QuantitySets { get; } = [];
     public List<IfcOpeningElement> Openings { get; } = [];
 
     /// <summary>
-    /// Gets the polygon mesh representation of the element, either explicitly assigned or generated on demand from its parametric solid.
+    /// Gets the polygon mesh representation of the element, either explicitly assigned or generated on demand from its parametric solid or CSG boolean operation.
     /// </summary>
-    public IfcMesh? GetEffectiveMesh() => Mesh ?? Solid?.ToMesh() ?? RevolvedSolid?.ToMesh();
+    public IfcMesh? GetEffectiveMesh() => Mesh ?? BooleanResult?.ToMesh() ?? Solid?.ToMesh() ?? RevolvedSolid?.ToMesh();
 
     public IfcPropertySet GetOrCreatePropertySet(string name)
     {

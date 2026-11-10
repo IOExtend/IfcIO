@@ -34,6 +34,8 @@ public sealed class IfcModel
 
     public List<IfcBuildingStorey> Storeys { get; } = [];
     public List<IfcMaterial> Materials { get; } = [];
+    public List<IfcMaterialLayerSet> MaterialLayerSets { get; } = [];
+    public List<IfcMaterialProfileSet> MaterialProfileSets { get; } = [];
     public List<IfcTypeProduct> TypeProducts { get; } = [];
     public List<IfcGroup> Groups { get; } = [];
     public List<IfcSystem> Systems { get; } = [];
@@ -41,6 +43,7 @@ public sealed class IfcModel
     public IEnumerable<IfcElement> AllElements => Storeys.SelectMany(s => s.Elements);
     public IEnumerable<IfcSpace> AllSpaces => Storeys.SelectMany(s => s.Spaces);
     public IEnumerable<IfcOpeningElement> AllOpenings => AllElements.SelectMany(e => e.Openings);
+    public IEnumerable<IfcDistributionPort> AllPorts => AllElements.SelectMany(e => e.Ports);
 
     public IfcModel()
     {
@@ -329,6 +332,160 @@ public sealed class IfcModel
         }
         Groups.Add(group);
         return group;
+    }
+
+    /// <summary>
+    /// Adds an element defined by a 3D solid clipped by an infinite plane (Constructive Solid Geometry / Boolean clipping).
+    /// Conforms to buildingSMART IFCBOOLEANCLIPPINGRESULT.
+    /// </summary>
+    public IfcElement AddClippedSolid(
+        string name,
+        IfcExtrudedAreaSolid solid,
+        IfcPlane plane,
+        bool agreementFlag = true,
+        IfcMaterial? material = null,
+        IfcBuildingStorey? storey = null,
+        string ifcType = "IfcBuildingElementProxy")
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        ArgumentNullException.ThrowIfNull(solid);
+        ArgumentNullException.ThrowIfNull(plane);
+
+        storey ??= Storeys[0];
+        int nextId = storey.Elements.Count + 1;
+
+        var halfSpace = new IfcHalfSpaceSolid(plane, agreementFlag);
+        var booleanResult = new IfcBooleanResult(solid, halfSpace, IfcBooleanOperator.Difference);
+        var element = new IfcElement
+        {
+            Id = nextId,
+            Name = name,
+            IfcType = ifcType,
+            BooleanResult = booleanResult,
+            Material = material,
+        };
+        AddElement(element, storey);
+        return element;
+    }
+
+    /// <summary>
+    /// Adds an MEP distribution port (terminal) to an element for flow network connectivity.
+    /// Conforms to buildingSMART IFCDISTRIBUTIONPORT and IFCRELCONNECTSPORTTOELEMENT.
+    /// </summary>
+    public static IfcDistributionPort AddDistributionPort(
+        IfcElement hostElement,
+        string name,
+        IfcFlowDirection flowDirection = IfcFlowDirection.SourceAndSink,
+        IfcVector3? position = null,
+        IfcVector3? direction = null,
+        string? systemType = null)
+    {
+        ArgumentNullException.ThrowIfNull(hostElement);
+        ArgumentNullException.ThrowIfNull(name);
+
+        var port = new IfcDistributionPort(name, flowDirection, position, direction, systemType)
+        {
+            HostElement = hostElement,
+        };
+        hostElement.Ports.Add(port);
+        return port;
+    }
+
+    /// <summary>
+    /// Connects two distribution ports to model fluid, airflow, or electrical continuity between MEP elements.
+    /// Conforms to buildingSMART IFCRELCONNECTSPORTS.
+    /// </summary>
+    public static void ConnectPorts(IfcDistributionPort portA, IfcDistributionPort portB)
+    {
+        ArgumentNullException.ThrowIfNull(portA);
+        ArgumentNullException.ThrowIfNull(portB);
+
+        portA.ConnectedPort = portB;
+        portB.ConnectedPort = portA;
+    }
+
+    /// <summary>
+    /// Traverses the connected MEP distribution element network using Breadth-First Search (BFS) starting from the specified element.
+    /// </summary>
+    public static List<IfcElement> TraceConnectedElements(IfcElement startElement)
+    {
+        ArgumentNullException.ThrowIfNull(startElement);
+
+        var visited = new HashSet<IfcElement>();
+        var queue = new Queue<IfcElement>();
+        queue.Enqueue(startElement);
+        visited.Add(startElement);
+
+        while (queue.Count > 0)
+        {
+            var current = queue.Dequeue();
+            foreach (var port in current.Ports)
+            {
+                var targetPort = port.ConnectedPort;
+                if (targetPort?.HostElement is not null && visited.Add(targetPort.HostElement))
+                {
+                    queue.Enqueue(targetPort.HostElement);
+                }
+            }
+        }
+
+        return visited.ToList();
+    }
+
+    /// <summary>
+    /// Creates and registers a multi-layer material set (composite construction) in the model.
+    /// Conforms to buildingSMART IFCMATERIALLAYERSET.
+    /// </summary>
+    public IfcMaterialLayerSet AddMaterialLayerSet(string name, IEnumerable<IfcMaterialLayer>? layers = null)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        var layerSet = new IfcMaterialLayerSet(name, layers);
+        MaterialLayerSets.Add(layerSet);
+        return layerSet;
+    }
+
+    /// <summary>
+    /// Associates a multi-layer material set with an element with an optional reference line offset.
+    /// Conforms to buildingSMART IFCMATERIALLAYERSETUSAGE and IFCRELASSOCIATESMATERIAL.
+    /// </summary>
+    public void AssignMaterialLayerSet(IfcElement element, IfcMaterialLayerSet layerSet, double offset = 0.0)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        ArgumentNullException.ThrowIfNull(layerSet);
+
+        element.MaterialLayerSet = new IfcMaterialLayerSetUsage(layerSet, offset);
+        if (!MaterialLayerSets.Contains(layerSet))
+        {
+            MaterialLayerSets.Add(layerSet);
+        }
+    }
+
+    /// <summary>
+    /// Creates and registers a structural material profile set in the model.
+    /// Conforms to buildingSMART IFCMATERIALPROFILESET.
+    /// </summary>
+    public IfcMaterialProfileSet AddMaterialProfileSet(string name, IEnumerable<IfcMaterialProfile>? profiles = null)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        var profileSet = new IfcMaterialProfileSet(name, profiles);
+        MaterialProfileSets.Add(profileSet);
+        return profileSet;
+    }
+
+    /// <summary>
+    /// Associates a material profile set with a structural element with a cardinal point alignment.
+    /// Conforms to buildingSMART IFCMATERIALPROFILESETUSAGE and IFCRELASSOCIATESMATERIAL.
+    /// </summary>
+    public void AssignMaterialProfileSet(IfcElement element, IfcMaterialProfileSet profileSet, int cardinalPoint = 5)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        ArgumentNullException.ThrowIfNull(profileSet);
+
+        element.MaterialProfileSet = new IfcMaterialProfileSetUsage(profileSet, cardinalPoint);
+        if (!MaterialProfileSets.Contains(profileSet))
+        {
+            MaterialProfileSets.Add(profileSet);
+        }
     }
 
     /// <summary>Exports a collection of BCF topics to a buildingSMART BCF 2.1 zip archive (.bcfzip).</summary>
@@ -762,6 +919,182 @@ public sealed class IfcModel
             }
         }
 
+        // 9. Material Layers & Profiles
+        var materialEntityMap = new Dictionary<IfcMaterial, int>();
+        foreach (var mat in Materials)
+        {
+            int matId = w.Add("IFCMATERIAL", StepWriter.Str(mat.Name));
+            materialEntityMap[mat] = matId;
+        }
+
+        var layerSetMap = new Dictionary<IfcMaterialLayerSet, int>();
+        foreach (var ls in MaterialLayerSets)
+        {
+            var layerIds = new List<int>();
+            foreach (var layer in ls.Layers)
+            {
+                if (!materialEntityMap.TryGetValue(layer.Material, out int matId))
+                {
+                    matId = w.Add("IFCMATERIAL", StepWriter.Str(layer.Material.Name));
+                    materialEntityMap[layer.Material] = matId;
+                }
+                string isVent = layer.IsVentilated ? ".T." : ".F.";
+                int layId = w.Add("IFCMATERIALLAYER",
+                    $"{StepWriter.Ref(matId)},{StepWriter.Real(layer.LayerThickness)},{isVent},{StepWriter.Str(layer.Name)},{StepWriter.Str(layer.Description)}");
+                layerIds.Add(layId);
+            }
+            int lsId = w.Add("IFCMATERIALLAYERSET",
+                $"{StepWriter.List(layerIds.Select(StepWriter.Ref))},{StepWriter.Str(ls.LayerSetName)},{StepWriter.Str(ls.Description)}");
+            layerSetMap[ls] = lsId;
+        }
+
+        foreach (var elem in AllElements)
+        {
+            if (elem.MaterialLayerSet is not null && elementEntityMap.TryGetValue(elem, out int elemId))
+            {
+                var usage = elem.MaterialLayerSet;
+                if (!layerSetMap.TryGetValue(usage.ForLayerSet, out int lsId))
+                {
+                    var layerIds = new List<int>();
+                    foreach (var layer in usage.ForLayerSet.Layers)
+                    {
+                        if (!materialEntityMap.TryGetValue(layer.Material, out int matId))
+                        {
+                            matId = w.Add("IFCMATERIAL", StepWriter.Str(layer.Material.Name));
+                            materialEntityMap[layer.Material] = matId;
+                        }
+                        string isVent = layer.IsVentilated ? ".T." : ".F.";
+                        int layId = w.Add("IFCMATERIALLAYER",
+                            $"{StepWriter.Ref(matId)},{StepWriter.Real(layer.LayerThickness)},{isVent},{StepWriter.Str(layer.Name)},{StepWriter.Str(layer.Description)}");
+                        layerIds.Add(layId);
+                    }
+                    lsId = w.Add("IFCMATERIALLAYERSET",
+                        $"{StepWriter.List(layerIds.Select(StepWriter.Ref))},{StepWriter.Str(usage.ForLayerSet.LayerSetName)},{StepWriter.Str(usage.ForLayerSet.Description)}");
+                    layerSetMap[usage.ForLayerSet] = lsId;
+                }
+
+                int usageId = w.Add("IFCMATERIALLAYERSETUSAGE",
+                    $"{StepWriter.Ref(lsId)},{usage.LayerSetDirection},{usage.DirectionSense},{StepWriter.Real(usage.OffsetFromReferenceLine)}");
+                w.Add("IFCRELASSOCIATESMATERIAL",
+                    $"{StepWriter.Str(IfcGuid.NewGuid())},{StepWriter.Ref(ownerHistoryId)},$,$,({StepWriter.Ref(elemId)}),{StepWriter.Ref(usageId)}");
+            }
+        }
+
+        var profileSetMap = new Dictionary<IfcMaterialProfileSet, int>();
+        foreach (var ps in MaterialProfileSets)
+        {
+            var mpIds = new List<int>();
+            foreach (var mp in ps.MaterialProfiles)
+            {
+                int matId = 0;
+                if (mp.Material is not null)
+                {
+                    if (!materialEntityMap.TryGetValue(mp.Material, out matId))
+                    {
+                        matId = w.Add("IFCMATERIAL", StepWriter.Str(mp.Material.Name));
+                        materialEntityMap[mp.Material] = matId;
+                    }
+                }
+                int profDefId = WriteProfileDef(w, mp.Profile);
+                string matRef = matId > 0 ? StepWriter.Ref(matId) : "$";
+                int mpId = w.Add("IFCMATERIALPROFILE",
+                    $"{StepWriter.Str(mp.Name)},$,{matRef},{StepWriter.Ref(profDefId)},$,$");
+                mpIds.Add(mpId);
+            }
+            int psId = w.Add("IFCMATERIALPROFILESET",
+                $"{StepWriter.Str(ps.Name)},{StepWriter.Str(ps.Description)},{StepWriter.List(mpIds.Select(StepWriter.Ref))},$");
+            profileSetMap[ps] = psId;
+        }
+
+        foreach (var elem in AllElements)
+        {
+            if (elem.MaterialProfileSet is not null && elementEntityMap.TryGetValue(elem, out int elemId))
+            {
+                var usage = elem.MaterialProfileSet;
+                if (!profileSetMap.TryGetValue(usage.ForProfileSet, out int psId))
+                {
+                    var mpIds = new List<int>();
+                    foreach (var mp in usage.ForProfileSet.MaterialProfiles)
+                    {
+                        int matId = 0;
+                        if (mp.Material is not null)
+                        {
+                            if (!materialEntityMap.TryGetValue(mp.Material, out matId))
+                            {
+                                matId = w.Add("IFCMATERIAL", StepWriter.Str(mp.Material.Name));
+                                materialEntityMap[mp.Material] = matId;
+                            }
+                        }
+                        int profDefId = WriteProfileDef(w, mp.Profile);
+                        string matRef = matId > 0 ? StepWriter.Ref(matId) : "$";
+                        int mpId = w.Add("IFCMATERIALPROFILE",
+                            $"{StepWriter.Str(mp.Name)},$,{matRef},{StepWriter.Ref(profDefId)},$,$");
+                        mpIds.Add(mpId);
+                    }
+                    psId = w.Add("IFCMATERIALPROFILESET",
+                        $"{StepWriter.Str(usage.ForProfileSet.Name)},{StepWriter.Str(usage.ForProfileSet.Description)},{StepWriter.List(mpIds.Select(StepWriter.Ref))},$");
+                    profileSetMap[usage.ForProfileSet] = psId;
+                }
+
+                int usageId = w.Add("IFCMATERIALPROFILESETUSAGE",
+                    $"{StepWriter.Ref(psId)},{usage.CardinalPoint},$");
+                w.Add("IFCRELASSOCIATESMATERIAL",
+                    $"{StepWriter.Str(IfcGuid.NewGuid())},{StepWriter.Ref(ownerHistoryId)},$,$,({StepWriter.Ref(elemId)}),{StepWriter.Ref(usageId)}");
+            }
+        }
+
+        // 10. MEP Distribution Ports & Network Connectivity
+        var portEntityMap = new Dictionary<IfcDistributionPort, int>();
+        foreach (var elem in AllElements)
+        {
+            if (elem.Ports.Count > 0 && elementEntityMap.TryGetValue(elem, out int hostElemId))
+            {
+                foreach (var port in elem.Ports)
+                {
+                    int ptId = w.Add("IFCCARTESIANPOINT", StepWriter.List(StepWriter.Real(port.Position.X), StepWriter.Real(port.Position.Y), StepWriter.Real(port.Position.Z)));
+                    int dirId = w.Add("IFCDIRECTION", StepWriter.List(StepWriter.Real(port.Direction.X), StepWriter.Real(port.Direction.Y), StepWriter.Real(port.Direction.Z)));
+                    int pl3dId = w.Add("IFCAXIS2PLACEMENT3D", $"{StepWriter.Ref(ptId)},{StepWriter.Ref(dirId)},$");
+                    int portPlacementId = w.Add("IFCLOCALPLACEMENT", $"{StepWriter.Ref(worldPlacement3dId)},{StepWriter.Ref(pl3dId)}");
+
+                    string flowDir = port.FlowDirection switch
+                    {
+                        IfcFlowDirection.Source => ".SOURCE.",
+                        IfcFlowDirection.Sink => ".SINK.",
+                        IfcFlowDirection.SourceAndSink => ".SOURCEANDSINK.",
+                        _ => ".NOTDEFINED.",
+                    };
+
+                    string portGuid = port.GlobalId ?? IfcGuid.NewGuid();
+                    int portId = w.Add("IFCDISTRIBUTIONPORT",
+                        $"{StepWriter.Str(portGuid)},{StepWriter.Ref(ownerHistoryId)},{StepWriter.Str(port.Name)},{StepWriter.Str(port.Description)},{StepWriter.Str(port.SystemType)},{StepWriter.Ref(portPlacementId)},$,{flowDir}");
+                    portEntityMap[port] = portId;
+
+                    w.Add("IFCRELCONNECTSPORTTOELEMENT",
+                        $"{StepWriter.Str(IfcGuid.NewGuid())},{StepWriter.Ref(ownerHistoryId)},$,$,{StepWriter.Ref(portId)},{StepWriter.Ref(hostElemId)}");
+                }
+            }
+        }
+
+        var connectedPairs = new HashSet<(int, int)>();
+        foreach (var elem in AllElements)
+        {
+            foreach (var port in elem.Ports)
+            {
+                if (port.ConnectedPort is not null &&
+                    portEntityMap.TryGetValue(port, out int portIdA) &&
+                    portEntityMap.TryGetValue(port.ConnectedPort, out int portIdB))
+                {
+                    int min = Math.Min(portIdA, portIdB);
+                    int max = Math.Max(portIdA, portIdB);
+                    if (connectedPairs.Add((min, max)))
+                    {
+                        w.Add("IFCRELCONNECTSPORTS",
+                            $"{StepWriter.Str(IfcGuid.NewGuid())},{StepWriter.Ref(ownerHistoryId)},$,$,{StepWriter.Ref(portIdA)},{StepWriter.Ref(portIdB)},$");
+                    }
+                }
+            }
+        }
+
         w.WriteTo(writer, fileName, schemaStr, viewDef, Application, Organization);
     }
 
@@ -1152,7 +1485,7 @@ public sealed class IfcModel
             int? shapeDefId = entity.GetRef(6);
             if (shapeDefId.HasValue)
             {
-                var mesh = ParseGeometry(step, shapeDefId.Value, name, geomToMaterialMap, out var mat, out var solid, out var revSolid);
+                var mesh = ParseGeometry(step, shapeDefId.Value, name, geomToMaterialMap, out var mat, out var solid, out var revSolid, out var boolResult);
                 if (mesh is not null)
                 {
                     element.Mesh = mesh;
@@ -1164,6 +1497,10 @@ public sealed class IfcModel
                 if (revSolid is not null)
                 {
                     element.RevolvedSolid = revSolid;
+                }
+                if (boolResult is not null)
+                {
+                    element.BooleanResult = boolResult;
                 }
                 if (mat is not null)
                 {
@@ -1297,6 +1634,201 @@ public sealed class IfcModel
             }
         }
 
+        // 10. Parse Materials & Composite Systems (IFCMATERIAL, IFCMATERIALLAYER, IFCMATERIALLAYERSET, IFCMATERIALLAYERSETUSAGE)
+        var materialMap = new Dictionary<int, IfcMaterial>();
+        foreach (var matEnt in step.OfType("IFCMATERIAL"))
+        {
+            string name = matEnt.GetString(0) ?? "Material";
+            var existing = model.Materials.FirstOrDefault(m => m.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+            if (existing is null)
+            {
+                existing = new IfcMaterial { Name = name };
+                model.Materials.Add(existing);
+            }
+            materialMap[matEnt.Id] = existing;
+        }
+
+        var layerMap = new Dictionary<int, IfcMaterialLayer>();
+        foreach (var layEnt in step.OfType("IFCMATERIALLAYER"))
+        {
+            int? matId = layEnt.GetRef(0);
+            IfcMaterial mat = (matId.HasValue && materialMap.TryGetValue(matId.Value, out var m))
+                ? m
+                : new IfcMaterial { Name = "DefaultMaterial" };
+            double thick = layEnt.GetReal(1) ?? 0.0;
+            string? isVentStr = layEnt.GetRaw(2);
+            bool isVent = isVentStr?.Contains(".T.", StringComparison.OrdinalIgnoreCase) == true;
+            string? lName = layEnt.GetString(3);
+            string? lDesc = layEnt.GetString(4);
+            layerMap[layEnt.Id] = new IfcMaterialLayer(mat, thick, isVent, lName) { Description = lDesc };
+        }
+
+        var layerSetMap = new Dictionary<int, IfcMaterialLayerSet>();
+        foreach (var lsEnt in step.OfType("IFCMATERIALLAYERSET"))
+        {
+            var layIds = lsEnt.GetRefList(0);
+            string lsName = lsEnt.GetString(1) ?? "Material Layer Set";
+            string? lsDesc = lsEnt.GetString(2);
+            var layers = layIds.Where(id => layerMap.ContainsKey(id)).Select(id => layerMap[id]);
+            var ls = new IfcMaterialLayerSet(lsName, layers) { Description = lsDesc };
+            layerSetMap[lsEnt.Id] = ls;
+            model.MaterialLayerSets.Add(ls);
+        }
+
+        var layerSetUsageMap = new Dictionary<int, IfcMaterialLayerSetUsage>();
+        foreach (var usageEnt in step.OfType("IFCMATERIALLAYERSETUSAGE"))
+        {
+            int? lsId = usageEnt.GetRef(0);
+            if (lsId.HasValue && layerSetMap.TryGetValue(lsId.Value, out var ls))
+            {
+                string dir = usageEnt.GetRaw(1) ?? ".AXIS2.";
+                string sense = usageEnt.GetRaw(2) ?? ".POSITIVE.";
+                double offset = usageEnt.GetReal(3) ?? 0.0;
+                layerSetUsageMap[usageEnt.Id] = new IfcMaterialLayerSetUsage(ls, offset, dir, sense);
+            }
+        }
+
+        // 11. Parse Material Profile Sets (IFCMATERIALPROFILE, IFCMATERIALPROFILESET, IFCMATERIALPROFILESETUSAGE)
+        var materialProfileMap = new Dictionary<int, IfcMaterialProfile>();
+        foreach (var mpEnt in step.OfType("IFCMATERIALPROFILE"))
+        {
+            string? mpName = mpEnt.GetString(0);
+            int? matId = mpEnt.GetRef(2);
+            int? profId = mpEnt.GetRef(3);
+            var prof = ParseProfile(step, profId);
+            if (prof is not null)
+            {
+                IfcMaterial? mat = (matId.HasValue && materialMap.TryGetValue(matId.Value, out var m)) ? m : null;
+                materialProfileMap[mpEnt.Id] = new IfcMaterialProfile(prof, mat, mpName);
+            }
+        }
+
+        var profileSetMap = new Dictionary<int, IfcMaterialProfileSet>();
+        foreach (var psEnt in step.OfType("IFCMATERIALPROFILESET"))
+        {
+            string psName = psEnt.GetString(0) ?? "Material Profile Set";
+            string? psDesc = psEnt.GetString(1);
+            var mpIds = psEnt.GetRefList(2);
+            var profiles = mpIds.Where(id => materialProfileMap.ContainsKey(id)).Select(id => materialProfileMap[id]);
+            var ps = new IfcMaterialProfileSet(psName, profiles) { Description = psDesc };
+            profileSetMap[psEnt.Id] = ps;
+            model.MaterialProfileSets.Add(ps);
+        }
+
+        var profileSetUsageMap = new Dictionary<int, IfcMaterialProfileSetUsage>();
+        foreach (var usageEnt in step.OfType("IFCMATERIALPROFILESETUSAGE"))
+        {
+            int? psId = usageEnt.GetRef(0);
+            if (psId.HasValue && profileSetMap.TryGetValue(psId.Value, out var ps))
+            {
+                int card = usageEnt.GetInt(1) ?? 5;
+                profileSetUsageMap[usageEnt.Id] = new IfcMaterialProfileSetUsage(ps, card);
+            }
+        }
+
+        // 12. Parse Material Associations (IFCRELASSOCIATESMATERIAL)
+        foreach (var relMat in step.OfType("IFCRELASSOCIATESMATERIAL"))
+        {
+            var elemIds = relMat.GetRefList(4);
+            int? matRelId = relMat.GetRef(5);
+            if (!matRelId.HasValue) continue;
+
+            foreach (int eId in elemIds)
+            {
+                if (allElementsMap.TryGetValue(eId, out var elem))
+                {
+                    if (layerSetUsageMap.TryGetValue(matRelId.Value, out var lu))
+                    {
+                        elem.MaterialLayerSet = lu;
+                    }
+                    else if (layerSetMap.TryGetValue(matRelId.Value, out var lset))
+                    {
+                        elem.MaterialLayerSet = new IfcMaterialLayerSetUsage(lset);
+                    }
+                    else if (profileSetUsageMap.TryGetValue(matRelId.Value, out var pu))
+                    {
+                        elem.MaterialProfileSet = pu;
+                    }
+                    else if (profileSetMap.TryGetValue(matRelId.Value, out var pset))
+                    {
+                        elem.MaterialProfileSet = new IfcMaterialProfileSetUsage(pset);
+                    }
+                    else if (materialMap.TryGetValue(matRelId.Value, out var directMat))
+                    {
+                        elem.Material = directMat;
+                    }
+                }
+            }
+        }
+
+        // 13. Parse MEP Distribution Ports & Network Connectivity
+        var portMap = new Dictionary<int, IfcDistributionPort>();
+        foreach (var portEnt in step.OfType("IFCDISTRIBUTIONPORT"))
+        {
+            string portGuid = portEnt.GetString(0) ?? IfcGuid.NewGuid();
+            string portName = portEnt.GetString(2) ?? "Port";
+            string? desc = portEnt.GetString(3);
+            string? sysType = portEnt.GetString(4);
+            int? plId = portEnt.GetRef(5);
+            var pos = ParsePlacement3D(step, plId);
+            var dir = IfcVector3.UnitZ;
+            if (plId.HasValue)
+            {
+                var plEnt = step.Find(plId.Value);
+                if (plEnt is not null && plEnt.Type.Equals("IFCAXIS2PLACEMENT3D", StringComparison.OrdinalIgnoreCase))
+                {
+                    int? dirId = plEnt.GetRef(1);
+                    if (dirId.HasValue) dir = ParseDirection(step, dirId);
+                }
+            }
+
+            string? rawFlow = portEnt.GetRaw(7);
+            var flow = IfcFlowDirection.NotDefined;
+            if (rawFlow?.Contains(".SOURCEANDSINK.", StringComparison.OrdinalIgnoreCase) == true)
+                flow = IfcFlowDirection.SourceAndSink;
+            else if (rawFlow?.Contains(".SOURCE.", StringComparison.OrdinalIgnoreCase) == true)
+                flow = IfcFlowDirection.Source;
+            else if (rawFlow?.Contains(".SINK.", StringComparison.OrdinalIgnoreCase) == true)
+                flow = IfcFlowDirection.Sink;
+
+            var port = new IfcDistributionPort(portName, flow, pos, dir, sysType)
+            {
+                Id = portEnt.Id,
+                GlobalId = portGuid,
+                Description = desc,
+            };
+            portMap[portEnt.Id] = port;
+        }
+
+        foreach (var relPortElem in step.OfType("IFCRELCONNECTSPORTTOELEMENT"))
+        {
+            int? portId = relPortElem.GetRef(4);
+            int? elemId = relPortElem.GetRef(5);
+            if (portId.HasValue && elemId.HasValue &&
+                portMap.TryGetValue(portId.Value, out var port) &&
+                allElementsMap.TryGetValue(elemId.Value, out var hostElem))
+            {
+                port.HostElement = hostElem;
+                if (!hostElem.Ports.Contains(port))
+                {
+                    hostElem.Ports.Add(port);
+                }
+            }
+        }
+
+        foreach (var relPorts in step.OfType("IFCRELCONNECTSPORTS"))
+        {
+            int? portId1 = relPorts.GetRef(4);
+            int? portId2 = relPorts.GetRef(5);
+            if (portId1.HasValue && portId2.HasValue &&
+                portMap.TryGetValue(portId1.Value, out var portA) &&
+                portMap.TryGetValue(portId2.Value, out var portB))
+            {
+                portA.ConnectedPort = portB;
+                portB.ConnectedPort = portA;
+            }
+        }
+
         return model;
     }
 
@@ -1330,6 +1862,20 @@ public sealed class IfcModel
             }
             int shapeRepId = w.Add("IFCSHAPEREPRESENTATION",
                 $"{StepWriter.Ref(bodySubContextId)},'Body','SweptSolid',({StepWriter.Ref(solidGeomId)})");
+            return w.Add("IFCPRODUCTDEFINITIONSHAPE",
+                $"$,$,({StepWriter.Ref(shapeRepId)})");
+        }
+
+        if (element.BooleanResult is not null)
+        {
+            int solidGeomId = WriteBooleanResult(w, element.BooleanResult, useTessellation);
+            if (styleId.HasValue)
+            {
+                w.Add("IFCSTYLEDITEM", $"{StepWriter.Ref(solidGeomId)},({StepWriter.Ref(styleId.Value)}),{StepWriter.Str(element.Material?.Name)}");
+            }
+            string repType = element.BooleanResult.IsClippingResult ? "Clipping" : "CSG";
+            int shapeRepId = w.Add("IFCSHAPEREPRESENTATION",
+                $"{StepWriter.Ref(bodySubContextId)},'Body',{StepWriter.Str(repType)},({StepWriter.Ref(solidGeomId)})");
             return w.Add("IFCPRODUCTDEFINITIONSHAPE",
                 $"$,$,({StepWriter.Ref(shapeRepId)})");
         }
@@ -1398,8 +1944,93 @@ public sealed class IfcModel
             int polyLineId = w.Add("IFCPOLYLINE", StepWriter.List(ptIds.Select(StepWriter.Ref)));
             return w.Add("IFCARBITRARYCLOSEDPROFILEDEF", $".AREA.,{StepWriter.Str(poly.ProfileName)},{StepWriter.Ref(polyLineId)}");
         }
+        if (profile is IfcIShapeProfileDef ishape)
+        {
+            string placement2dRef = "$";
+            if (Math.Abs(ishape.Position.X) > 1e-9 || Math.Abs(ishape.Position.Y) > 1e-9)
+            {
+                int pt2dId = w.Add("IFCCARTESIANPOINT", StepWriter.List(StepWriter.Real(ishape.Position.X), StepWriter.Real(ishape.Position.Y)));
+                int pl2dId = w.Add("IFCAXIS2PLACEMENT2D", $"{StepWriter.Ref(pt2dId)},$");
+                placement2dRef = StepWriter.Ref(pl2dId);
+            }
+            string fillet = ishape.FilletRadius.HasValue ? StepWriter.Real(ishape.FilletRadius.Value) : "$";
+            return w.Add("IFCISHAPEPROFILEDEF",
+                $".AREA.,{StepWriter.Str(ishape.ProfileName)},{placement2dRef},{StepWriter.Real(ishape.OverallWidth)},{StepWriter.Real(ishape.OverallDepth)},{StepWriter.Real(ishape.WebThickness)},{StepWriter.Real(ishape.FlangeThickness)},{fillet}");
+        }
+        if (profile is IfcLShapeProfileDef lshape)
+        {
+            string placement2dRef = "$";
+            if (Math.Abs(lshape.Position.X) > 1e-9 || Math.Abs(lshape.Position.Y) > 1e-9)
+            {
+                int pt2dId = w.Add("IFCCARTESIANPOINT", StepWriter.List(StepWriter.Real(lshape.Position.X), StepWriter.Real(lshape.Position.Y)));
+                int pl2dId = w.Add("IFCAXIS2PLACEMENT2D", $"{StepWriter.Ref(pt2dId)},$");
+                placement2dRef = StepWriter.Ref(pl2dId);
+            }
+            string fillet = lshape.FilletRadius.HasValue ? StepWriter.Real(lshape.FilletRadius.Value) : "$";
+            return w.Add("IFCLSHAPEPROFILEDEF",
+                $".AREA.,{StepWriter.Str(lshape.ProfileName)},{placement2dRef},{StepWriter.Real(lshape.Depth)},{StepWriter.Real(lshape.Width)},{StepWriter.Real(lshape.Thickness)},{fillet},$,$");
+        }
+        if (profile is IfcUShapeProfileDef ushape)
+        {
+            string placement2dRef = "$";
+            if (Math.Abs(ushape.Position.X) > 1e-9 || Math.Abs(ushape.Position.Y) > 1e-9)
+            {
+                int pt2dId = w.Add("IFCCARTESIANPOINT", StepWriter.List(StepWriter.Real(ushape.Position.X), StepWriter.Real(ushape.Position.Y)));
+                int pl2dId = w.Add("IFCAXIS2PLACEMENT2D", $"{StepWriter.Ref(pt2dId)},$");
+                placement2dRef = StepWriter.Ref(pl2dId);
+            }
+            string fillet = ushape.FilletRadius.HasValue ? StepWriter.Real(ushape.FilletRadius.Value) : "$";
+            return w.Add("IFCUSHAPEPROFILEDEF",
+                $".AREA.,{StepWriter.Str(ushape.ProfileName)},{placement2dRef},{StepWriter.Real(ushape.Depth)},{StepWriter.Real(ushape.FlangeWidth)},{StepWriter.Real(ushape.WebThickness)},{StepWriter.Real(ushape.FlangeThickness)},{fillet},$");
+        }
 
         throw new NotSupportedException($"Profile type {profile.GetType().Name} is not supported.");
+    }
+
+    private static int WriteBooleanResult(StepWriter w, IfcBooleanResult csg, bool useTessellation)
+    {
+        int firstId = 0;
+        if (csg.FirstSolid is not null)
+            firstId = WriteExtrudedAreaSolid(w, csg.FirstSolid);
+        else if (csg.FirstRevolved is not null)
+            firstId = WriteRevolvedAreaSolid(w, csg.FirstRevolved);
+        else if (csg.FirstMesh is not null)
+            firstId = useTessellation
+                ? WriteMeshTriangulatedFaceSet(w, csg.FirstMesh.Vertices, csg.FirstMesh.Indices)
+                : WriteMeshFacetedBrep(w, csg.FirstMesh.Vertices, csg.FirstMesh.Indices);
+
+        int secondId = 0;
+        if (csg.SecondHalfSpace is not null)
+        {
+            var hs = csg.SecondHalfSpace;
+            var plane = hs.BaseSurface;
+            int locPtId = w.Add("IFCCARTESIANPOINT", StepWriter.List(StepWriter.Real(plane.Location.X), StepWriter.Real(plane.Location.Y), StepWriter.Real(plane.Location.Z)));
+            int axisDirId = w.Add("IFCDIRECTION", StepWriter.List(StepWriter.Real(plane.Normal.X), StepWriter.Real(plane.Normal.Y), StepWriter.Real(plane.Normal.Z)));
+            int pl3dId = w.Add("IFCAXIS2PLACEMENT3D", $"{StepWriter.Ref(locPtId)},{StepWriter.Ref(axisDirId)},$");
+            int planeId = w.Add("IFCPLANE", StepWriter.Ref(pl3dId));
+            string flag = hs.AgreementFlag ? ".T." : ".F.";
+            secondId = w.Add("IFCHALFSPACESOLID", $"{StepWriter.Ref(planeId)},{flag}");
+        }
+        else if (csg.SecondSolid is not null)
+        {
+            secondId = WriteExtrudedAreaSolid(w, csg.SecondSolid);
+        }
+        else if (csg.SecondMesh is not null)
+        {
+            secondId = useTessellation
+                ? WriteMeshTriangulatedFaceSet(w, csg.SecondMesh.Vertices, csg.SecondMesh.Indices)
+                : WriteMeshFacetedBrep(w, csg.SecondMesh.Vertices, csg.SecondMesh.Indices);
+        }
+
+        string op = csg.Operator switch
+        {
+            IfcBooleanOperator.Union => ".UNION.",
+            IfcBooleanOperator.Intersection => ".INTERSECTION.",
+            _ => ".DIFFERENCE.",
+        };
+
+        string entityType = csg.IsClippingResult ? "IFCBOOLEANCLIPPINGRESULT" : "IFCBOOLEANRESULT";
+        return w.Add(entityType, $"{op},{StepWriter.Ref(firstId)},{StepWriter.Ref(secondId)}");
     }
 
     private static int WriteExtrudedAreaSolid(StepWriter w, IfcExtrudedAreaSolid solid)
@@ -1432,11 +2063,13 @@ public sealed class IfcModel
         Dictionary<int, IfcMaterial> geomToMaterialMap,
         out IfcMaterial? material,
         out IfcExtrudedAreaSolid? solid,
-        out IfcRevolvedAreaSolid? revolvedSolid)
+        out IfcRevolvedAreaSolid? revolvedSolid,
+        out IfcBooleanResult? booleanResult)
     {
         material = null;
         solid = null;
         revolvedSolid = null;
+        booleanResult = null;
         var shapeDef = step.Find(shapeDefId);
         if (shapeDef is null) return null;
 
@@ -1458,117 +2091,11 @@ public sealed class IfcModel
                     material = mat;
                 }
 
-                // A. IFCFACETEDBREP
-                if (itemEnt.Type.Equals("IFCFACETEDBREP", StringComparison.OrdinalIgnoreCase))
+                // A/B. Meshes (Brep / TriangulatedFaceSet)
+                var mesh = ParseMeshEntity(step, itemEnt, meshName);
+                if (mesh is not null)
                 {
-                    int? shellId = itemEnt.GetRef(0);
-                    var shellEnt = step.Find(shellId);
-                    if (shellEnt is null) continue;
-
-                    var vertices = new List<IfcVector3>();
-                    var indices = new List<int>();
-                    var pointIndexMap = new Dictionary<int, int>();
-
-                    var faceIds = shellEnt.GetRefList(0);
-                    foreach (int faceId in faceIds)
-                    {
-                        var faceEnt = step.Find(faceId);
-                        if (faceEnt is null) continue;
-
-                        var boundIds = faceEnt.GetRefList(0);
-                        foreach (int boundId in boundIds)
-                        {
-                            var boundEnt = step.Find(boundId);
-                            if (boundEnt is null) continue;
-
-                            int? loopId = boundEnt.GetRef(0);
-                            var loopEnt = step.Find(loopId);
-                            if (loopEnt is null || !loopEnt.Type.Equals("IFCPOLYLOOP", StringComparison.OrdinalIgnoreCase))
-                                continue;
-
-                            var ptIds = loopEnt.GetRefList(0);
-                            var faceIndices = new List<int>(ptIds.Count);
-
-                            foreach (int ptId in ptIds)
-                            {
-                                if (!pointIndexMap.TryGetValue(ptId, out int idx))
-                                {
-                                    var ptEnt = step.Find(ptId);
-                                    if (ptEnt is not null)
-                                    {
-                                        string coordStr = ptEnt.GetRaw(0) ?? string.Empty;
-                                        var coords = StepEntity.ParseArguments(coordStr.Trim('(', ')'));
-                                        double x = coords.Count > 0 && double.TryParse(coords[0], NumberStyles.Float, CultureInfo.InvariantCulture, out double cx) ? cx : 0.0;
-                                        double y = coords.Count > 1 && double.TryParse(coords[1], NumberStyles.Float, CultureInfo.InvariantCulture, out double cy) ? cy : 0.0;
-                                        double z = coords.Count > 2 && double.TryParse(coords[2], NumberStyles.Float, CultureInfo.InvariantCulture, out double cz) ? cz : 0.0;
-
-                                        idx = vertices.Count;
-                                        vertices.Add(new IfcVector3(x, y, z));
-                                        pointIndexMap[ptId] = idx;
-                                    }
-                                }
-                                faceIndices.Add(idx);
-                            }
-
-                            // Fan triangulation for convex polygons
-                            for (int i = 1; i + 1 < faceIndices.Count; i++)
-                            {
-                                indices.Add(faceIndices[0]);
-                                indices.Add(faceIndices[i]);
-                                indices.Add(faceIndices[i + 1]);
-                            }
-                        }
-                    }
-
-                    if (vertices.Count >= 3 && indices.Count >= 3)
-                    {
-                        return IfcMesh.Create(itemId, meshName, vertices, indices);
-                    }
-                }
-
-                // B. IFCTRIANGULATEDFACESET (IFC4)
-                if (itemEnt.Type.Equals("IFCTRIANGULATEDFACESET", StringComparison.OrdinalIgnoreCase))
-                {
-                    int? ptListId = itemEnt.GetRef(0);
-                    var ptListEnt = step.Find(ptListId);
-                    if (ptListEnt is null) continue;
-
-                    var vertices = new List<IfcVector3>();
-                    string rawCoords = ptListEnt.GetRaw(0) ?? string.Empty;
-
-                    // Parse point list: ((x1, y1, z1), (x2, y2, z2), ...)
-                    foreach (var tuple in StepEntity.ParseArguments(rawCoords.Trim('(', ')')))
-                    {
-                        var parts = StepEntity.ParseArguments(tuple.Trim('(', ')'));
-                        double x = parts.Count > 0 && double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out double px) ? px : 0.0;
-                        double y = parts.Count > 1 && double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out double py) ? py : 0.0;
-                        double z = parts.Count > 2 && double.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out double pz) ? pz : 0.0;
-                        vertices.Add(new IfcVector3(x, y, z));
-                    }
-
-                    var indices = new List<int>();
-                    string rawTriangles = itemEnt.GetRaw(3) ?? string.Empty;
-                    foreach (var triTuple in StepEntity.ParseArguments(rawTriangles.Trim('(', ')')))
-                    {
-                        var parts = StepEntity.ParseArguments(triTuple.Trim('(', ')'));
-                        if (parts.Count >= 3)
-                        {
-                            if (int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out int i0) &&
-                                int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out int i1) &&
-                                int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out int i2))
-                            {
-                                // STEP 1-based to 0-based
-                                indices.Add(i0 - 1);
-                                indices.Add(i1 - 1);
-                                indices.Add(i2 - 1);
-                            }
-                        }
-                    }
-
-                    if (vertices.Count >= 3 && indices.Count >= 3)
-                    {
-                        return IfcMesh.Create(itemId, meshName, vertices, indices);
-                    }
+                    return mesh;
                 }
 
                 // C. IFCEXTRUDEDAREASOLID
@@ -1608,10 +2135,254 @@ public sealed class IfcModel
                         return revSolid.ToMesh(16, 24, meshName);
                     }
                 }
+
+                // E. IFCBOOLEANRESULT / IFCBOOLEANCLIPPINGRESULT
+                if (itemEnt.Type.Equals("IFCBOOLEANRESULT", StringComparison.OrdinalIgnoreCase) ||
+                    itemEnt.Type.Equals("IFCBOOLEANCLIPPINGRESULT", StringComparison.OrdinalIgnoreCase))
+                {
+                    var boolRes = ParseBooleanResult(step, itemEnt);
+                    if (boolRes is not null)
+                    {
+                        booleanResult = boolRes;
+                        return boolRes.ToMesh(meshName);
+                    }
+                }
             }
         }
 
         return null;
+    }
+
+    private static IfcMesh? ParseMeshEntity(StepFile step, StepEntity itemEnt, string meshName = "Mesh")
+    {
+        // IFCFACETEDBREP
+        if (itemEnt.Type.Equals("IFCFACETEDBREP", StringComparison.OrdinalIgnoreCase))
+        {
+            int? shellId = itemEnt.GetRef(0);
+            var shellEnt = step.Find(shellId);
+            if (shellEnt is null) return null;
+
+            var vertices = new List<IfcVector3>();
+            var indices = new List<int>();
+            var pointIndexMap = new Dictionary<int, int>();
+
+            var faceIds = shellEnt.GetRefList(0);
+            foreach (int faceId in faceIds)
+            {
+                var faceEnt = step.Find(faceId);
+                if (faceEnt is null) continue;
+
+                var boundIds = faceEnt.GetRefList(0);
+                foreach (int boundId in boundIds)
+                {
+                    var boundEnt = step.Find(boundId);
+                    if (boundEnt is null) continue;
+
+                    int? loopId = boundEnt.GetRef(0);
+                    var loopEnt = step.Find(loopId);
+                    if (loopEnt is null || !loopEnt.Type.Equals("IFCPOLYLOOP", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    var ptIds = loopEnt.GetRefList(0);
+                    var faceIndices = new List<int>(ptIds.Count);
+
+                    foreach (int ptId in ptIds)
+                    {
+                        if (!pointIndexMap.TryGetValue(ptId, out int idx))
+                        {
+                            var ptEnt = step.Find(ptId);
+                            if (ptEnt is not null)
+                            {
+                                string coordStr = ptEnt.GetRaw(0) ?? string.Empty;
+                                var coords = StepEntity.ParseArguments(coordStr.Trim('(', ')'));
+                                double x = coords.Count > 0 && double.TryParse(coords[0], NumberStyles.Float, CultureInfo.InvariantCulture, out double cx) ? cx : 0.0;
+                                double y = coords.Count > 1 && double.TryParse(coords[1], NumberStyles.Float, CultureInfo.InvariantCulture, out double cy) ? cy : 0.0;
+                                double z = coords.Count > 2 && double.TryParse(coords[2], NumberStyles.Float, CultureInfo.InvariantCulture, out double cz) ? cz : 0.0;
+
+                                idx = vertices.Count;
+                                vertices.Add(new IfcVector3(x, y, z));
+                                pointIndexMap[ptId] = idx;
+                            }
+                        }
+                        faceIndices.Add(idx);
+                    }
+
+                    for (int i = 1; i + 1 < faceIndices.Count; i++)
+                    {
+                        indices.Add(faceIndices[0]);
+                        indices.Add(faceIndices[i]);
+                        indices.Add(faceIndices[i + 1]);
+                    }
+                }
+            }
+
+            if (vertices.Count >= 3 && indices.Count >= 3)
+            {
+                return IfcMesh.Create(itemEnt.Id, meshName, vertices, indices);
+            }
+        }
+
+        // IFCTRIANGULATEDFACESET (IFC4)
+        if (itemEnt.Type.Equals("IFCTRIANGULATEDFACESET", StringComparison.OrdinalIgnoreCase))
+        {
+            int? ptListId = itemEnt.GetRef(0);
+            var ptListEnt = step.Find(ptListId);
+            if (ptListEnt is null) return null;
+
+            var vertices = new List<IfcVector3>();
+            string rawCoords = ptListEnt.GetRaw(0) ?? string.Empty;
+
+            foreach (var tuple in StepEntity.ParseArguments(rawCoords.Trim('(', ')')))
+            {
+                var parts = StepEntity.ParseArguments(tuple.Trim('(', ')'));
+                double x = parts.Count > 0 && double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out double px) ? px : 0.0;
+                double y = parts.Count > 1 && double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out double py) ? py : 0.0;
+                double z = parts.Count > 2 && double.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out double pz) ? pz : 0.0;
+                vertices.Add(new IfcVector3(x, y, z));
+            }
+
+            var indices = new List<int>();
+            string rawTriangles = itemEnt.GetRaw(3) ?? string.Empty;
+            foreach (var triTuple in StepEntity.ParseArguments(rawTriangles.Trim('(', ')')))
+            {
+                var parts = StepEntity.ParseArguments(triTuple.Trim('(', ')'));
+                if (parts.Count >= 3)
+                {
+                    if (int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out int i0) &&
+                        int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out int i1) &&
+                        int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out int i2))
+                    {
+                        // STEP 1-based to 0-based
+                        indices.Add(i0 - 1);
+                        indices.Add(i1 - 1);
+                        indices.Add(i2 - 1);
+                    }
+                }
+            }
+
+            if (vertices.Count >= 3 && indices.Count >= 3)
+            {
+                return IfcMesh.Create(itemEnt.Id, meshName, vertices, indices);
+            }
+        }
+
+        return null;
+    }
+
+    private static IfcBooleanResult? ParseBooleanResult(StepFile step, StepEntity itemEnt)
+    {
+        string? opStr = itemEnt.GetRaw(0);
+        var op = IfcBooleanOperator.Difference;
+        if (opStr?.Contains(".UNION.", StringComparison.OrdinalIgnoreCase) == true)
+            op = IfcBooleanOperator.Union;
+        else if (opStr?.Contains(".INTERSECTION.", StringComparison.OrdinalIgnoreCase) == true)
+            op = IfcBooleanOperator.Intersection;
+
+        int? firstOpId = itemEnt.GetRef(1);
+        int? secondOpId = itemEnt.GetRef(2);
+
+        var boolResult = new IfcBooleanResult { Operator = op };
+
+        if (firstOpId.HasValue)
+        {
+            var firstEnt = step.Find(firstOpId.Value);
+            if (firstEnt is not null)
+            {
+                if (firstEnt.Type.Equals("IFCEXTRUDEDAREASOLID", StringComparison.OrdinalIgnoreCase))
+                {
+                    int? profId = firstEnt.GetRef(0);
+                    var prof = ParseProfile(step, profId);
+                    if (prof is not null)
+                    {
+                        var pos = ParsePlacement3D(step, firstEnt.GetRef(1));
+                        var dir = ParseDirection(step, firstEnt.GetRef(2));
+                        double depth = firstEnt.GetReal(3) ?? 0.0;
+                        boolResult.FirstSolid = new IfcExtrudedAreaSolid(prof, depth, pos, dir);
+                    }
+                }
+                else if (firstEnt.Type.Equals("IFCREVOLVEDAREASOLID", StringComparison.OrdinalIgnoreCase))
+                {
+                    int? profId = firstEnt.GetRef(0);
+                    var prof = ParseProfile(step, profId);
+                    if (prof is not null)
+                    {
+                        var pos = ParsePlacement3D(step, firstEnt.GetRef(1));
+                        var axis = ParseAxis1Placement(step, firstEnt.GetRef(2));
+                        double angle = firstEnt.GetReal(3) ?? (2.0 * Math.PI);
+                        boolResult.FirstRevolved = new IfcRevolvedAreaSolid(prof, angle, pos, axis);
+                    }
+                }
+                else
+                {
+                    boolResult.FirstMesh = ParseMeshEntity(step, firstEnt);
+                }
+            }
+        }
+
+        if (secondOpId.HasValue)
+        {
+            var secondEnt = step.Find(secondOpId.Value);
+            if (secondEnt is not null)
+            {
+                if (secondEnt.Type.Equals("IFCHALFSPACESOLID", StringComparison.OrdinalIgnoreCase))
+                {
+                    boolResult.SecondHalfSpace = ParseHalfSpaceSolid(step, secondOpId.Value);
+                }
+                else if (secondEnt.Type.Equals("IFCEXTRUDEDAREASOLID", StringComparison.OrdinalIgnoreCase))
+                {
+                    int? profId = secondEnt.GetRef(0);
+                    var prof = ParseProfile(step, profId);
+                    if (prof is not null)
+                    {
+                        var pos = ParsePlacement3D(step, secondEnt.GetRef(1));
+                        var dir = ParseDirection(step, secondEnt.GetRef(2));
+                        double depth = secondEnt.GetReal(3) ?? 0.0;
+                        boolResult.SecondSolid = new IfcExtrudedAreaSolid(prof, depth, pos, dir);
+                    }
+                }
+                else
+                {
+                    boolResult.SecondMesh = ParseMeshEntity(step, secondEnt);
+                }
+            }
+        }
+
+        return boolResult;
+    }
+
+    private static IfcPlane? ParsePlane(StepFile step, int? planeId)
+    {
+        if (!planeId.HasValue) return null;
+        var planeEnt = step.Find(planeId.Value);
+        if (planeEnt is null) return null;
+
+        int? pl3dId = planeEnt.GetRef(0);
+        var loc = ParsePlacement3D(step, pl3dId);
+        var normal = IfcVector3.UnitZ;
+        if (pl3dId.HasValue)
+        {
+            var plEnt = step.Find(pl3dId.Value);
+            if (plEnt is not null)
+            {
+                int? axisDirId = plEnt.GetRef(1);
+                if (axisDirId.HasValue) normal = ParseDirection(step, axisDirId);
+            }
+        }
+        return new IfcPlane(loc, normal);
+    }
+
+    private static IfcHalfSpaceSolid? ParseHalfSpaceSolid(StepFile step, int? halfSpaceId)
+    {
+        if (!halfSpaceId.HasValue) return null;
+        var hsEnt = step.Find(halfSpaceId.Value);
+        if (hsEnt is null) return null;
+
+        int? planeId = hsEnt.GetRef(0);
+        var plane = ParsePlane(step, planeId) ?? new IfcPlane();
+        string? rawFlag = hsEnt.GetRaw(1);
+        bool flag = rawFlag is null || !rawFlag.Contains(".F.", StringComparison.OrdinalIgnoreCase);
+
+        return new IfcHalfSpaceSolid(plane, flag);
     }
 
     private static IfcProfileDef? ParseProfile(StepFile step, int? profileId)
@@ -1641,6 +2412,38 @@ public sealed class IfcModel
             int? curveId = profEnt.GetRef(2);
             var pts = ParsePolylinePoints(step, curveId);
             return new IfcArbitraryClosedProfileDef(pts, pName);
+        }
+
+        if (profEnt.Type.Equals("IFCISHAPEPROFILEDEF", StringComparison.OrdinalIgnoreCase))
+        {
+            var pos2d = ParsePlacement2D(step, profEnt.GetRef(2));
+            double overallWidth = profEnt.GetReal(3) ?? 0.0;
+            double overallDepth = profEnt.GetReal(4) ?? 0.0;
+            double webThickness = profEnt.GetReal(5) ?? 0.0;
+            double flangeThickness = profEnt.GetReal(6) ?? 0.0;
+            double? filletRadius = profEnt.GetReal(7);
+            return new IfcIShapeProfileDef(overallWidth, overallDepth, webThickness, flangeThickness, filletRadius, pos2d, pName);
+        }
+
+        if (profEnt.Type.Equals("IFCLSHAPEPROFILEDEF", StringComparison.OrdinalIgnoreCase))
+        {
+            var pos2d = ParsePlacement2D(step, profEnt.GetRef(2));
+            double depth = profEnt.GetReal(3) ?? 0.0;
+            double width = profEnt.GetReal(4) ?? depth;
+            double thickness = profEnt.GetReal(5) ?? 0.0;
+            double? filletRadius = profEnt.GetReal(6);
+            return new IfcLShapeProfileDef(depth, width, thickness, filletRadius, pos2d, pName);
+        }
+
+        if (profEnt.Type.Equals("IFCUSHAPEPROFILEDEF", StringComparison.OrdinalIgnoreCase))
+        {
+            var pos2d = ParsePlacement2D(step, profEnt.GetRef(2));
+            double depth = profEnt.GetReal(3) ?? 0.0;
+            double flangeWidth = profEnt.GetReal(4) ?? 0.0;
+            double webThickness = profEnt.GetReal(5) ?? 0.0;
+            double flangeThickness = profEnt.GetReal(6) ?? 0.0;
+            double? filletRadius = profEnt.GetReal(7);
+            return new IfcUShapeProfileDef(depth, flangeWidth, webThickness, flangeThickness, filletRadius, pos2d, pName);
         }
 
         return null;

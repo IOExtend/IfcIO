@@ -20,6 +20,7 @@ public readonly record struct IfcVector3(double X, double Y, double Z)
 
     public static IfcVector3 operator +(IfcVector3 a, IfcVector3 b) => new(a.X + b.X, a.Y + b.Y, a.Z + b.Z);
     public static IfcVector3 operator -(IfcVector3 a, IfcVector3 b) => new(a.X - b.X, a.Y - b.Y, a.Z - b.Z);
+    public static IfcVector3 operator -(IfcVector3 a) => new(-a.X, -a.Y, -a.Z);
     public static IfcVector3 operator *(IfcVector3 a, double scalar) => new(a.X * scalar, a.Y * scalar, a.Z * scalar);
     public static IfcVector3 operator *(double scalar, IfcVector3 a) => new(a.X * scalar, a.Y * scalar, a.Z * scalar);
 

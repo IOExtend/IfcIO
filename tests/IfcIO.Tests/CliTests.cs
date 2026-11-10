@@ -101,4 +101,61 @@ public class CliTests
             if (File.Exists(tempUnpacked)) File.Delete(tempUnpacked);
         }
     }
+
+    [Fact]
+    public void Cli_Query_FindsMatchingElements()
+    {
+        string samplePath = CreateSampleIfcFile();
+        try
+        {
+            int code = Program.Main(["query", samplePath, "IfcWall"]);
+            Assert.Equal(0, code);
+        }
+        finally
+        {
+            if (File.Exists(samplePath)) File.Delete(samplePath);
+        }
+    }
+
+    [Fact]
+    public void Cli_Patch_Purge_SavesCleanedModel()
+    {
+        string samplePath = CreateSampleIfcFile();
+        string tempOut = Path.Combine(Path.GetTempPath(), $"cli_patch_{Guid.NewGuid():N}.ifc");
+        try
+        {
+            int code = Program.Main(["patch", samplePath, "-o", tempOut, "--purge"]);
+            Assert.Equal(0, code);
+            Assert.True(File.Exists(tempOut));
+        }
+        finally
+        {
+            if (File.Exists(samplePath)) File.Delete(samplePath);
+            if (File.Exists(tempOut)) File.Delete(tempOut);
+        }
+    }
+
+    [Fact]
+    public void Cli_CsvRoundtrip_ExportsAndImports()
+    {
+        string samplePath = CreateSampleIfcFile();
+        string tempCsv = Path.Combine(Path.GetTempPath(), $"cli_export_{Guid.NewGuid():N}.csv");
+        string tempIfc = Path.Combine(Path.GetTempPath(), $"cli_import_{Guid.NewGuid():N}.ifc");
+        try
+        {
+            int codeExp = Program.Main(["export-csv", samplePath, "-o", tempCsv, "-p", "FireRating", "LoadBearing"]);
+            Assert.Equal(0, codeExp);
+            Assert.True(File.Exists(tempCsv));
+
+            int codeImp = Program.Main(["import-csv", samplePath, "--csv", tempCsv, "-o", tempIfc]);
+            Assert.Equal(0, codeImp);
+            Assert.True(File.Exists(tempIfc));
+        }
+        finally
+        {
+            if (File.Exists(samplePath)) File.Delete(samplePath);
+            if (File.Exists(tempCsv)) File.Delete(tempCsv);
+            if (File.Exists(tempIfc)) File.Delete(tempIfc);
+        }
+    }
 }

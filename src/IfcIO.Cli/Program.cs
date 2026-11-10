@@ -35,6 +35,11 @@ public static class Program
                 "pack" => ExecutePack(cmdArgs),
                 "unpack" => ExecuteUnpack(cmdArgs),
                 "validate" => ExecuteValidate(cmdArgs),
+                "validate-ids" => ExecuteValidateIds(cmdArgs),
+                "query" => ExecuteQuery(cmdArgs),
+                "patch" => ExecutePatch(cmdArgs),
+                "export-csv" => ExecuteExportCsv(cmdArgs),
+                "import-csv" => ExecuteImportCsv(cmdArgs),
                 _ when File.Exists(args[0]) => ExecuteDefault(args),
                 _ => PrintUnknownCommand(command)
             };
@@ -60,6 +65,18 @@ Commands:
   pack <file.ifc>       Compress an .ifc physical file into a standard .ifczip archive
   unpack <file.ifczip>  Extract the .ifc physical file from an .ifczip archive
   validate <file>       Validate ISO 10303-21 STEP structure, header, and spatial relationships
+  validate-ids <file> <spec.ids> Validate model against buildingSMART IDS 1.0 XML specification
+  query <file> <query>  Filter and inspect elements using IfcOpenShell-style selector expressions
+  patch <file> [opts]   Apply cleanup, coordinate reset, or extraction recipes to an IFC model
+  export-csv <file> <out.csv> Export elements and properties to tabular CSV format
+  import-csv <file> <in.csv> -o <out.ifc> Update property sets from a CSV spreadsheet
+
+Patch Options:
+  --purge               Remove empty/duplicate property sets, quantity sets, and empty storeys
+  --reset-coords        Shift large UTM coordinates to local origin (0,0,0) to prevent jitter
+  --offset <x,y,z>      Translate model geometry by given coordinate offset
+  --extract <query>     Extract matching elements into a separate IFC model
+  -o, --output <path>   Output file path for patched IFC model
 
 Options:
   --glb <path>          Output binary glTF 2.0 file (.glb)
@@ -68,6 +85,8 @@ Options:
   --ifczip <path>       Output compressed IFC archive (.ifczip)
   --bcf <path>          Export validation issues to buildingSMART BCF 2.1 zip archive (.bcfzip)
   --schema <ifc2x3|ifc4> Target schema for IFC export
+  --props <names>       Comma-separated property names for export-csv (e.g. 'FireRating,LoadBearing')
+  --delimiter <delim>   CSV delimiter character (default: ';')
   --spaces              Display architectural spaces, rooms, and boundaries
   --systems             Display MEP systems and grouped elements
   --report              Display detailed category and storey breakdown in info command
@@ -76,6 +95,11 @@ Options:
 
 Examples:
   ifcio info Building.ifc --report --spaces --systems
+  ifcio query Building.ifc ""IfcWall[LoadBearing=TRUE]""
+  ifcio patch Building.ifc --purge --reset-coords -o Cleaned.ifc
+  ifcio patch Building.ifc --extract ""IfcWall"" -o Walls.ifc
+  ifcio validate-ids Building.ifc Rules.ids --bcf AuditIssues.bcfzip
+  ifcio export-csv Building.ifc Params.csv --props ""Pset_WallCommon.FireRating,LoadBearing""
   ifcio export Building.ifc --glb scene.glb
   ifcio validate Building.ifc --bcf issues.bcfzip
   ifcio pack Building.ifc -o Building.ifczip
@@ -529,5 +553,290 @@ Examples:
             }
         }
         return null;
+    }
+
+    private static int ExecuteQuery(string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("Error: 'ifcio query <model.ifc> <selector>' requires input model and query expression.");
+            return 1;
+        }
+
+        string inputPath = args[0];
+        string query = args[1];
+
+        if (!File.Exists(inputPath))
+        {
+            Console.Error.WriteLine($"Error: Input file '{inputPath}' does not exist.");
+            return 1;
+        }
+
+        var sw = Stopwatch.StartNew();
+        var model = IfcModel.Open(inputPath);
+        var matched = model.Select(query).ToList();
+        sw.Stop();
+
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.WriteLine($"Query: \"{query}\" matched {matched.Count:N0} element(s) in {sw.ElapsedMilliseconds} ms:");
+        Console.ResetColor();
+
+        Console.WriteLine($"{"ID",-8} | {"TYPE",-24} | {"NAME",-30} | {"GLOBAL ID",-24}");
+        Console.WriteLine(new string('-', 95));
+
+        foreach (var elem in matched.Take(100))
+        {
+            string name = elem.Name.Length > 28 ? elem.Name[..25] + "..." : elem.Name;
+            Console.WriteLine($"{elem.Id,-8} | {elem.IfcType,-24} | {name,-30} | {elem.GlobalId ?? "N/A",-24}");
+        }
+
+        if (matched.Count > 100)
+        {
+            Console.WriteLine($"... and {matched.Count - 100} more matching elements.");
+        }
+
+        return 0;
+    }
+
+    private static int ExecutePatch(string[] args)
+    {
+        if (args.Length < 1)
+        {
+            Console.Error.WriteLine("Error: 'ifcio patch <model.ifc> [options]' requires an input model.");
+            return 1;
+        }
+
+        string inputPath = args[0];
+        if (!File.Exists(inputPath))
+        {
+            Console.Error.WriteLine($"Error: Input file '{inputPath}' does not exist.");
+            return 1;
+        }
+
+        string? outputPath = GetOptionValue(args, "-o") ?? GetOptionValue(args, "--output");
+        if (string.IsNullOrEmpty(outputPath))
+        {
+            Console.Error.WriteLine("Error: Patch command requires output path specified via -o or --output.");
+            return 1;
+        }
+
+        bool purge = args.Contains("--purge", StringComparer.OrdinalIgnoreCase);
+        bool resetCoords = args.Contains("--reset-coords", StringComparer.OrdinalIgnoreCase);
+        string? extractQuery = GetOptionValue(args, "--extract");
+        string? offsetStr = GetOptionValue(args, "--offset");
+
+        var sw = Stopwatch.StartNew();
+        var model = IfcModel.Open(inputPath);
+
+        if (!string.IsNullOrEmpty(extractQuery))
+        {
+            Console.WriteLine($"  * Extracting elements matching query: \"{extractQuery}\"");
+            model = model.Extract(extractQuery);
+        }
+
+        if (purge)
+        {
+            var stats = model.Purge();
+            Console.WriteLine($"  * Purged: {stats.RemovedPropertySets} property sets, {stats.RemovedQuantitySets} quantity sets, {stats.RemovedEmptyStoreys} empty storeys.");
+        }
+
+        if (resetCoords)
+        {
+            if (model.ResetCoordinates(out var offset))
+            {
+                Console.WriteLine($"  * Reset coordinates: shifted model by ({offset.X:F2}, {offset.Y:F2}) m.");
+            }
+            else
+            {
+                Console.WriteLine("  * Coordinates already within local origin threshold.");
+            }
+        }
+
+        if (!string.IsNullOrEmpty(offsetStr))
+        {
+            var parts = offsetStr.Split(',');
+            if (parts.Length == 3 &&
+                double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out double ox) &&
+                double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out double oy) &&
+                double.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out double oz))
+            {
+                model.OffsetCoordinates(new Geometry.IfcVector3(ox, oy, oz));
+                Console.WriteLine($"  * Applied manual offset: ({ox:F3}, {oy:F3}, {oz:F3}) m.");
+            }
+        }
+
+        model.Save(outputPath);
+        sw.Stop();
+
+        Console.ForegroundColor = ConsoleColor.Green;
+        Console.WriteLine($"Patched model successfully saved to '{outputPath}' in {sw.ElapsedMilliseconds} ms.");
+        Console.ResetColor();
+        return 0;
+    }
+
+    private static int ExecuteValidateIds(string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("Error: 'ifcio validate-ids <model.ifc> <rules.ids> [--bcf <issues.bcfzip>]' requires model and IDS file.");
+            return 1;
+        }
+
+        string inputPath = args[0];
+        string idsPath = args[1];
+
+        if (!File.Exists(inputPath))
+        {
+            Console.Error.WriteLine($"Error: Input model '{inputPath}' does not exist.");
+            return 1;
+        }
+
+        if (!File.Exists(idsPath))
+        {
+            Console.Error.WriteLine($"Error: IDS rules file '{idsPath}' does not exist.");
+            return 1;
+        }
+
+        var sw = Stopwatch.StartNew();
+        var model = IfcModel.Open(inputPath);
+        var report = model.ValidateIds(idsPath);
+        sw.Stop();
+
+        Console.WriteLine($"IDS Specification: \"{report.Title}\" (v{report.IdsVersion ?? "1.0"})");
+        Console.WriteLine($"Total specifications: {report.TotalSpecifications}, Applicable elements: {report.TotalApplicableElements:N0}");
+        Console.WriteLine($"Passed: {report.PassedSpecifications}, Failed: {report.FailedSpecifications}");
+        Console.WriteLine();
+
+        foreach (var failure in report.Failures.Take(50))
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"  [FAIL] {failure.SpecificationName}: {failure.ElementType} #{failure.ElementId} - {failure.Message}");
+            Console.ResetColor();
+        }
+
+        if (report.Failures.Count > 50)
+        {
+            Console.WriteLine($"... and {report.Failures.Count - 50} more failures.");
+        }
+
+        string? bcfPath = GetOptionValue(args, "--bcf");
+        if (!string.IsNullOrEmpty(bcfPath) && report.Failures.Count > 0)
+        {
+            report.SaveBcf(bcfPath);
+            Console.ForegroundColor = ConsoleColor.Cyan;
+            Console.WriteLine($"Exported {report.Failures.Count} compliance issues to BCF 2.1: '{bcfPath}'");
+            Console.ResetColor();
+        }
+
+        if (report.IsCompliant)
+        {
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine($"IDS Validation PASSED (100% compliant) in {sw.ElapsedMilliseconds} ms.");
+            Console.ResetColor();
+            return 0;
+        }
+        else
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"IDS Validation FAILED with {report.Failures.Count} requirement violations.");
+            Console.ResetColor();
+            return 1;
+        }
+    }
+
+    private static int ExecuteExportCsv(string[] args)
+    {
+        if (args.Length < 1)
+        {
+            Console.Error.WriteLine("Error: 'ifcio export-csv <model.ifc> [-o <out.csv>] [--props <P1,P2...>]' requires model path.");
+            return 1;
+        }
+
+        string inputPath = args[0];
+        string? outPath = GetOptionValue(args, "-o") ?? GetOptionValue(args, "--output");
+        if (string.IsNullOrEmpty(outPath) && args.Length >= 2 && !args[1].StartsWith('-'))
+        {
+            outPath = args[1];
+        }
+
+        if (string.IsNullOrEmpty(outPath))
+        {
+            Console.Error.WriteLine("Error: export-csv requires output path specified via -o/--output or as second argument.");
+            return 1;
+        }
+
+        if (!File.Exists(inputPath))
+        {
+            Console.Error.WriteLine($"Error: Input file '{inputPath}' does not exist.");
+            return 1;
+        }
+
+        string? propsRaw = GetOptionValue(args, "-p") ?? GetOptionValue(args, "--props");
+        var props = !string.IsNullOrEmpty(propsRaw) ? propsRaw.Split(',').Select(p => p.Trim()) : Array.Empty<string>();
+        string delimiter = GetOptionValue(args, "--delimiter") ?? ";";
+
+        var sw = Stopwatch.StartNew();
+        var model = IfcModel.Open(inputPath);
+        model.ExportCsv(outPath, props, delimiter);
+        sw.Stop();
+
+        Console.ForegroundColor = ConsoleColor.Green;
+        Console.WriteLine($"Exported {model.AllElements.Count():N0} elements to CSV '{outPath}' in {sw.ElapsedMilliseconds} ms.");
+        Console.ResetColor();
+        return 0;
+    }
+
+    private static int ExecuteImportCsv(string[] args)
+    {
+        if (args.Length < 1)
+        {
+            Console.Error.WriteLine("Error: 'ifcio import-csv <model.ifc> <in.csv> -o <out.ifc>' requires model and CSV input path.");
+            return 1;
+        }
+
+        string inputPath = args[0];
+        string? csvPath = GetOptionValue(args, "--csv");
+        if (string.IsNullOrEmpty(csvPath) && args.Length >= 2 && !args[1].StartsWith('-'))
+        {
+            csvPath = args[1];
+        }
+
+        if (string.IsNullOrEmpty(csvPath))
+        {
+            Console.Error.WriteLine("Error: import-csv requires CSV input path specified via --csv or as second argument.");
+            return 1;
+        }
+
+        if (!File.Exists(inputPath))
+        {
+            Console.Error.WriteLine($"Error: Input file '{inputPath}' does not exist.");
+            return 1;
+        }
+
+        if (!File.Exists(csvPath))
+        {
+            Console.Error.WriteLine($"Error: CSV file '{csvPath}' does not exist.");
+            return 1;
+        }
+
+        string? outPath = GetOptionValue(args, "-o") ?? GetOptionValue(args, "--output");
+        if (string.IsNullOrEmpty(outPath))
+        {
+            Console.Error.WriteLine("Error: import-csv requires output path specified via -o or --output.");
+            return 1;
+        }
+
+        string delimiter = GetOptionValue(args, "--delimiter") ?? ";";
+
+        var sw = Stopwatch.StartNew();
+        var model = IfcModel.Open(inputPath);
+        var (elems, props) = model.ImportCsv(csvPath, delimiter);
+        model.Save(outPath);
+        sw.Stop();
+
+        Console.ForegroundColor = ConsoleColor.Green;
+        Console.WriteLine($"Imported {props:N0} properties across {elems:N0} elements. Saved to '{outPath}' in {sw.ElapsedMilliseconds} ms.");
+        Console.ResetColor();
+        return 0;
     }
 }

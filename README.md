@@ -48,6 +48,17 @@ Built clean-room under the [IOExtend](https://github.com/IOExtend) organization 
   - Composite layer assemblies (`IfcMaterialLayer`, `IfcMaterialLayerSet`, `IfcMaterialLayerSetUsage`) and structural profile sets (`IfcMaterialProfile`, `IfcMaterialProfileSet`, `IfcMaterialProfileSetUsage`) linked via `IFCRELASSOCIATESMATERIAL`.
 - **Architectural & MEP Spaces (`IfcSpace`) & BCF 2.1 Coordination**:
   - High-level spaces, space boundaries (`IfcSpaceBoundary`), MEP systems (`IfcSystem`), and full BIM Collaboration Format 2.1 zip read/write (`IfcIO.Bcf`).
+- **IfcOpenShell-Style Query Selector Engine (`IfcSelector`)**:
+  - Declarative filtering syntax for entities, spatial storeys, property/attribute constraints (`[LoadBearing=TRUE]`, `[FireRating>=60]`, `[Name*='Conc']`), and union lists (`IfcWall, IfcColumn`).
+- **Model Repair, Cleanup & Recipes (`IfcPatch`)**:
+  - `Purge`: removes empty/duplicate property sets and empty storeys.
+  - `ResetCoordinates`: detects large UTM coordinates (>10,000m) and centers model geometry at origin (0, 0, 0) to prevent precision jitter.
+  - `Extract`: extracts element subsets into self-contained models.
+  - `Merge`: combines multiple models reconciling storeys and re-indexing IDs.
+- **buildingSMART IDS 1.0 Compliance Engine (`IfcIdsValidator`)**:
+  - Audits models against Information Delivery Specification (`.ids`) XML files and exports violations to BCF 2.1 archives (`.bcfzip`).
+- **Tabular Property CSV Roundtrip Bridge (`IfcCsvBridge`)**:
+  - Fast CSV spreadsheet export and bulk property import conforming to `ifccsv`.
 - **Zero Dependencies**: Pure C# targeting `.NET 8` and `.NET 10`.
 
 ---
@@ -212,6 +223,68 @@ Console.WriteLine($"Elements: {model.AllElements.Count()}");
 model.SaveGlb("Building_Converted.glb");
 ```
 
+### Querying Elements (`IfcSelector`)
+
+Filter elements using IfcOpenShell-compatible selector syntax:
+
+```csharp
+// Select load-bearing walls on Level 1
+var walls = model.Select("IfcWall#Level 1[LoadBearing=TRUE]");
+
+// Select high-fire-rating elements across multiple types
+var fireResistant = model.Select("IfcWall, IfcColumn[FireRating>=60]");
+
+// Check if a single element matches a query condition
+bool isCandidate = element.Matches("[Name*='Concrete']");
+```
+
+### Model Cleanup, Coordinate Shifting & Merging (`IfcPatch`)
+
+```csharp
+// 1. Purge unreferenced and empty property sets and empty storeys
+var purgeReport = model.Purge();
+
+// 2. Center models located at large absolute UTM coordinates (>10,000 m)
+if (model.ResetCoordinates(out var offsetVector))
+{
+    Console.WriteLine($"Recentered model to origin (offset applied: {offsetVector})");
+}
+
+// 3. Extract a standalone model containing only structural elements
+var structureModel = model.Extract("IfcWall, IfcColumn, IfcBeam", "Structural Package");
+structureModel.Save("Structure_Only.ifc");
+
+// 4. Merge multiple disciplinary models into a coordinated model
+var merged = IfcPatch.Merge([archModel, structModel, mepModel], "Campus Combined");
+merged.Save("Campus_Coordinated.ifc");
+```
+
+### Information Delivery Specification (IDS 1.0) & BCF Export
+
+```csharp
+// Audit IFC model against buildingSMART IDS 1.0 specification
+var idsReport = model.ValidateIds("Requirements.ids");
+
+if (!idsReport.IsCompliant)
+{
+    Console.WriteLine($"Audit failed with {idsReport.Failures.Count} violations.");
+
+    // Export non-compliant elements directly to BCF 2.1 for issue tracking
+    idsReport.SaveBcf("IDS_Compliance_Issues.bcfzip");
+}
+```
+
+### Tabular CSV Property Schedules (`IfcCsvBridge`)
+
+```csharp
+// Export elements and custom property sets to CSV spreadsheet
+model.ExportCsv("Schedules.csv", ["Pset_WallCommon.FireRating", "LoadBearing", "Material"]);
+
+// Re-import modified properties back into matching elements
+var (elementsUpdated, propertiesUpdated) = model.ImportCsv("Schedules_Edited.csv");
+model.Save("Building_Updated.ifc");
+```
+
 ---
 
 ## Global CLI Tool (`ifcio`)
@@ -227,6 +300,21 @@ dotnet tool install --global IfcIO.Cli
 ```sh
 # Inspect model metadata, storeys, spaces, systems, and element distribution
 ifcio info Building.ifc --report --spaces --systems
+
+# Query elements matching IfcOpenShell-style selector
+ifcio query Building.ifc "IfcWall[LoadBearing=TRUE]"
+
+# Model repair and coordinate recipes (purge, reset UTM coordinates, extract)
+ifcio patch Building.ifc -o Cleaned.ifc --purge --reset-coords
+
+# Audit compliance against buildingSMART IDS 1.0 and export BCF issues
+ifcio validate-ids Building.ifc Requirements.ids --bcf AuditIssues.bcfzip
+
+# Export tabular CSV property schedules
+ifcio export-csv Building.ifc -o Schedules.csv -p "FireRating,LoadBearing"
+
+# Import updated property schedules back into IFC
+ifcio import-csv Building.ifc --csv Schedules_Edited.csv -o Building_Updated.ifc
 
 # Convert IFC to binary glTF 2.0 and Wavefront OBJ
 ifcio export Building.ifc --glb scene.glb --obj scene.obj

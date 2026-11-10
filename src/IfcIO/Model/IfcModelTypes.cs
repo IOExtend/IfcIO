@@ -224,6 +224,7 @@ public sealed class IfcTypeProduct
     public required string Name { get; set; }
     public string IfcType { get; set; } = "IFCBUILDINGELEMENTPROXYTYPE";
     public string? GlobalId { get; set; }
+    public string? Description { get; set; }
     public string? Tag { get; set; }
     public List<IfcPropertySet> PropertySets { get; } = [];
 
@@ -286,6 +287,12 @@ public class IfcElement
         QuantitySets.Add(qset);
         return qset;
     }
+
+    /// <summary>
+    /// Evaluates whether this element matches an IfcOpenShell-style selector query string.
+    /// </summary>
+    public bool Matches(string selectorQuery, IfcModel? model = null) =>
+        Query.IfcSelector.Parse(selectorQuery).Matches(this, model);
 }
 
 /// <summary>

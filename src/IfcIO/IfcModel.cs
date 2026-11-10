@@ -37,6 +37,7 @@ public sealed class IfcModel
     public List<IfcTypeProduct> TypeProducts { get; } = [];
 
     public IEnumerable<IfcElement> AllElements => Storeys.SelectMany(s => s.Elements);
+    public IEnumerable<IfcOpeningElement> AllOpenings => AllElements.SelectMany(e => e.Openings);
 
     public IfcModel()
     {
@@ -115,6 +116,101 @@ public sealed class IfcModel
 
         storey.Elements.Add(element);
         return element;
+    }
+
+    /// <summary>Creates and adds an element with a parametric rectangular extruded swept solid.</summary>
+    public IfcElement AddExtrudedRectangle(
+        string name,
+        double xDim,
+        double yDim,
+        double depth,
+        IfcVector3? position = null,
+        IfcVector3? direction = null,
+        IfcMaterial? material = null,
+        IfcBuildingStorey? storey = null,
+        string? ifcType = null)
+    {
+        storey ??= Storeys[0];
+        int nextId = storey.Elements.Count + 1;
+        var profile = new IfcRectangleProfileDef(xDim, yDim, name: $"{name}_Profile");
+        var solid = new IfcExtrudedAreaSolid(profile, depth, position, direction);
+
+        var element = new IfcElement
+        {
+            Id = nextId,
+            Name = name,
+            IfcType = ifcType ?? ClassifyElement(name, material?.Name),
+            Solid = solid,
+            Material = material,
+        };
+
+        if (material is not null && !Materials.Contains(material))
+        {
+            Materials.Add(material);
+        }
+
+        storey.Elements.Add(element);
+        return element;
+    }
+
+    /// <summary>Creates and adds an element with a parametric circular extruded swept solid.</summary>
+    public IfcElement AddExtrudedCircle(
+        string name,
+        double radius,
+        double depth,
+        IfcVector3? position = null,
+        IfcVector3? direction = null,
+        IfcMaterial? material = null,
+        IfcBuildingStorey? storey = null,
+        string? ifcType = null)
+    {
+        storey ??= Storeys[0];
+        int nextId = storey.Elements.Count + 1;
+        var profile = new IfcCircleProfileDef(radius, name: $"{name}_Profile");
+        var solid = new IfcExtrudedAreaSolid(profile, depth, position, direction);
+
+        var element = new IfcElement
+        {
+            Id = nextId,
+            Name = name,
+            IfcType = ifcType ?? ClassifyElement(name, material?.Name),
+            Solid = solid,
+            Material = material,
+        };
+
+        if (material is not null && !Materials.Contains(material))
+        {
+            Materials.Add(material);
+        }
+
+        storey.Elements.Add(element);
+        return element;
+    }
+
+    /// <summary>
+    /// Adds an opening / void element to a host building element (e.g. wall cutout for window/door).
+    /// </summary>
+    public IfcOpeningElement AddOpening(
+        IfcElement hostElement,
+        string name,
+        IfcExtrudedAreaSolid? solid = null,
+        IfcMesh? mesh = null,
+        IfcElement? filling = null)
+    {
+        ArgumentNullException.ThrowIfNull(hostElement);
+
+        int nextId = (AllOpenings.Count() + 1) * 1000 + hostElement.Id;
+        var opening = new IfcOpeningElement
+        {
+            Id = nextId,
+            Name = name,
+            Solid = solid,
+            Mesh = mesh,
+            Filling = filling,
+        };
+
+        hostElement.Openings.Add(opening);
+        return opening;
     }
 
     /// <summary>Validates the model against buildingSMART MVD and geometric integrity rules.</summary>
@@ -271,40 +367,7 @@ public sealed class IfcModel
                 int prodPlacementId = w.Add("IFCLOCALPLACEMENT",
                     $"{StepWriter.Ref(storeyPlacementId)},{StepWriter.Ref(worldPlacement3dId)}");
 
-                int prodShapeId = StepWriter.Null == "$" ? w.Add("IFCPRODUCTDEFINITIONSHAPE", "$,$,()") : 0;
-
-                if (element.Mesh is not null && element.Mesh.Vertices.Count >= 3 && element.Mesh.Indices.Count >= 3)
-                {
-                    int? styleId = null;
-                    if (element.Material is not null)
-                    {
-                        styleId = GetOrCreateSurfaceStyle(w, element.Material, styleCache);
-                    }
-
-                    int geomId;
-                    string repType;
-
-                    if (useTessellation)
-                    {
-                        geomId = WriteMeshTriangulatedFaceSet(w, element.Mesh.Vertices, element.Mesh.Indices);
-                        repType = "Tessellation";
-                    }
-                    else
-                    {
-                        geomId = WriteMeshFacetedBrep(w, element.Mesh.Vertices, element.Mesh.Indices);
-                        repType = "Brep";
-                    }
-
-                    if (styleId.HasValue)
-                    {
-                        w.Add("IFCSTYLEDITEM", $"{StepWriter.Ref(geomId)},({StepWriter.Ref(styleId.Value)}),{StepWriter.Str(element.Material?.Name)}");
-                    }
-
-                    int shapeRepId = w.Add("IFCSHAPEREPRESENTATION",
-                        $"{StepWriter.Ref(bodySubContextId)},'Body',{StepWriter.Str(repType)},({StepWriter.Ref(geomId)})");
-                    prodShapeId = w.Add("IFCPRODUCTDEFINITIONSHAPE",
-                        $"$,$,({StepWriter.Ref(shapeRepId)})");
-                }
+                int prodShapeId = WriteElementShape(w, element, bodySubContextId, styleCache, useTessellation);
 
                 string elemGuid = element.GlobalId ?? IfcGuid.FromElementId(element.Id, "IfcIO");
                 string ifcType = !string.IsNullOrEmpty(element.IfcType)
@@ -313,6 +376,43 @@ public sealed class IfcModel
 
                 int elemId = AddIfcProduct(w, ifcType, elemGuid, ownerHistoryId, element.Name, prodPlacementId, prodShapeId, element.Tag ?? element.Id.ToString(CultureInfo.InvariantCulture));
                 storeyElementIds.Add(elemId);
+
+                // Openings (voids) and fillings
+                if (element.Openings.Count > 0)
+                {
+                    foreach (var opening in element.Openings)
+                    {
+                        int openPlacementId = w.Add("IFCLOCALPLACEMENT",
+                            $"{StepWriter.Ref(prodPlacementId)},{StepWriter.Ref(worldPlacement3dId)}");
+                        int openShapeId = WriteElementShape(w, opening, bodySubContextId, styleCache, useTessellation);
+
+                        string openGuid = opening.GlobalId ?? IfcGuid.FromElementId(opening.Id, "IfcIO-Opening");
+                        int openElemId = w.Add("IFCOPENINGELEMENT",
+                            $"{StepWriter.Str(openGuid)},{StepWriter.Ref(ownerHistoryId)},{StepWriter.Str(opening.Name)},$,$,{StepWriter.Ref(openPlacementId)},{StepWriter.Ref(openShapeId)},{StepWriter.Str(opening.Tag ?? opening.Id.ToString(CultureInfo.InvariantCulture))},.OPENING.");
+
+                        w.Add("IFCRELVOIDSELEMENT",
+                            $"{StepWriter.Str(IfcGuid.NewGuid())},{StepWriter.Ref(ownerHistoryId)},$,$,{StepWriter.Ref(elemId)},{StepWriter.Ref(openElemId)}");
+
+                        if (opening.Filling is not null)
+                        {
+                            var filling = opening.Filling;
+                            int fillPlacementId = w.Add("IFCLOCALPLACEMENT",
+                                $"{StepWriter.Ref(openPlacementId)},{StepWriter.Ref(worldPlacement3dId)}");
+                            int fillShapeId = WriteElementShape(w, filling, bodySubContextId, styleCache, useTessellation);
+
+                            string fillGuid = filling.GlobalId ?? IfcGuid.FromElementId(filling.Id, "IfcIO-Filling");
+                            string fillType = !string.IsNullOrEmpty(filling.IfcType)
+                                ? filling.IfcType
+                                : ClassifyElement(filling.Name, filling.Material?.Name);
+
+                            int fillElemId = AddIfcProduct(w, fillType, fillGuid, ownerHistoryId, filling.Name, fillPlacementId, fillShapeId, filling.Tag ?? filling.Id.ToString(CultureInfo.InvariantCulture));
+                            storeyElementIds.Add(fillElemId);
+
+                            w.Add("IFCRELFILLSELEMENT",
+                                $"{StepWriter.Str(IfcGuid.NewGuid())},{StepWriter.Ref(ownerHistoryId)},$,$,{StepWriter.Ref(openElemId)},{StepWriter.Ref(fillElemId)}");
+                        }
+                    }
+                }
 
                 // Type relation tracking
                 if (element.TypeProduct is not null)
@@ -555,6 +655,7 @@ public sealed class IfcModel
 
         // 6. Parse Elements & Meshes
         var defaultStorey = model.Storeys[0];
+        var allElementsMap = new Dictionary<int, IfcElement>();
 
         foreach (var entity in step.Entities.Values)
         {
@@ -566,14 +667,25 @@ public sealed class IfcModel
 
             var targetStorey = elementToStoreyMap.TryGetValue(entity.Id, out var s) ? s : defaultStorey;
 
-            var element = new IfcElement
-            {
-                Id = entity.Id,
-                Name = name,
-                IfcType = entity.Type,
-                GlobalId = globalId,
-                Tag = tag,
-            };
+            bool isOpening = entity.Type.Equals("IFCOPENINGELEMENT", StringComparison.OrdinalIgnoreCase);
+
+            var element = isOpening
+                ? new IfcOpeningElement
+                {
+                    Id = entity.Id,
+                    Name = name,
+                    IfcType = entity.Type,
+                    GlobalId = globalId,
+                    Tag = tag,
+                }
+                : new IfcElement
+                {
+                    Id = entity.Id,
+                    Name = name,
+                    IfcType = entity.Type,
+                    GlobalId = globalId,
+                    Tag = tag,
+                };
 
             // Link property sets
             if (elementPropertySets.TryGetValue(entity.Id, out var psets))
@@ -581,14 +693,18 @@ public sealed class IfcModel
                 element.PropertySets.AddRange(psets);
             }
 
-            // Parse Mesh Geometry
+            // Parse Mesh / Solid Geometry
             int? shapeDefId = entity.GetRef(6);
             if (shapeDefId.HasValue)
             {
-                var mesh = ParseMeshGeometry(step, shapeDefId.Value, name, geomToMaterialMap, out var mat);
+                var mesh = ParseGeometry(step, shapeDefId.Value, name, geomToMaterialMap, out var mat, out var solid);
                 if (mesh is not null)
                 {
                     element.Mesh = mesh;
+                }
+                if (solid is not null)
+                {
+                    element.Solid = solid;
                 }
                 if (mat is not null)
                 {
@@ -596,20 +712,154 @@ public sealed class IfcModel
                 }
             }
 
-            targetStorey.Elements.Add(element);
+            allElementsMap[entity.Id] = element;
+            if (!isOpening)
+            {
+                targetStorey.Elements.Add(element);
+            }
+        }
+
+        // 7. Parse Voids (IFCRELVOIDSELEMENT) and Fillings (IFCRELFILLSELEMENT)
+        foreach (var relVoids in step.OfType("IFCRELVOIDSELEMENT"))
+        {
+            int? hostId = relVoids.GetRef(4);
+            int? openId = relVoids.GetRef(5);
+            if (hostId.HasValue && openId.HasValue &&
+                allElementsMap.TryGetValue(hostId.Value, out var hostElem) &&
+                allElementsMap.TryGetValue(openId.Value, out var openElem) &&
+                openElem is IfcOpeningElement opening)
+            {
+                if (!hostElem.Openings.Contains(opening))
+                {
+                    hostElem.Openings.Add(opening);
+                }
+            }
+        }
+
+        foreach (var relFills in step.OfType("IFCRELFILLSELEMENT"))
+        {
+            int? openId = relFills.GetRef(4);
+            int? fillId = relFills.GetRef(5);
+            if (openId.HasValue && fillId.HasValue &&
+                allElementsMap.TryGetValue(openId.Value, out var openElem) &&
+                openElem is IfcOpeningElement opening &&
+                allElementsMap.TryGetValue(fillId.Value, out var fillElem))
+            {
+                opening.Filling = fillElem;
+            }
         }
 
         return model;
     }
 
-    private static IfcMesh? ParseMeshGeometry(
+    private static int WriteElementShape(StepWriter w, IfcElement element, int bodySubContextId, Dictionary<string, int> styleCache, bool useTessellation)
+    {
+        int? styleId = null;
+        if (element.Material is not null)
+        {
+            styleId = GetOrCreateSurfaceStyle(w, element.Material, styleCache);
+        }
+
+        if (element.Solid is not null)
+        {
+            int solidGeomId = WriteExtrudedAreaSolid(w, element.Solid);
+            if (styleId.HasValue)
+            {
+                w.Add("IFCSTYLEDITEM", $"{StepWriter.Ref(solidGeomId)},({StepWriter.Ref(styleId.Value)}),{StepWriter.Str(element.Material?.Name)}");
+            }
+            int shapeRepId = w.Add("IFCSHAPEREPRESENTATION",
+                $"{StepWriter.Ref(bodySubContextId)},'Body','SweptSolid',({StepWriter.Ref(solidGeomId)})");
+            return w.Add("IFCPRODUCTDEFINITIONSHAPE",
+                $"$,$,({StepWriter.Ref(shapeRepId)})");
+        }
+
+        if (element.Mesh is not null && element.Mesh.Vertices.Count >= 3 && element.Mesh.Indices.Count >= 3)
+        {
+            int geomId;
+            string repType;
+
+            if (useTessellation)
+            {
+                geomId = WriteMeshTriangulatedFaceSet(w, element.Mesh.Vertices, element.Mesh.Indices);
+                repType = "Tessellation";
+            }
+            else
+            {
+                geomId = WriteMeshFacetedBrep(w, element.Mesh.Vertices, element.Mesh.Indices);
+                repType = "Brep";
+            }
+
+            if (styleId.HasValue)
+            {
+                w.Add("IFCSTYLEDITEM", $"{StepWriter.Ref(geomId)},({StepWriter.Ref(styleId.Value)}),{StepWriter.Str(element.Material?.Name)}");
+            }
+
+            int shapeRepId = w.Add("IFCSHAPEREPRESENTATION",
+                $"{StepWriter.Ref(bodySubContextId)},'Body',{StepWriter.Str(repType)},({StepWriter.Ref(geomId)})");
+            return w.Add("IFCPRODUCTDEFINITIONSHAPE",
+                $"$,$,({StepWriter.Ref(shapeRepId)})");
+        }
+
+        return StepWriter.Null == "$" ? w.Add("IFCPRODUCTDEFINITIONSHAPE", "$,$,()") : 0;
+    }
+
+    private static int WriteExtrudedAreaSolid(StepWriter w, IfcExtrudedAreaSolid solid)
+    {
+        int profileId;
+        if (solid.Profile is IfcRectangleProfileDef rect)
+        {
+            string placement2dRef = "$";
+            if (Math.Abs(rect.Position.X) > 1e-9 || Math.Abs(rect.Position.Y) > 1e-9)
+            {
+                int pt2dId = w.Add("IFCCARTESIANPOINT", StepWriter.List(StepWriter.Real(rect.Position.X), StepWriter.Real(rect.Position.Y)));
+                int pl2dId = w.Add("IFCAXIS2PLACEMENT2D", $"{StepWriter.Ref(pt2dId)},$");
+                placement2dRef = StepWriter.Ref(pl2dId);
+            }
+            profileId = w.Add("IFCRECTANGLEPROFILEDEF", $".AREA.,{StepWriter.Str(rect.ProfileName)},{placement2dRef},{StepWriter.Real(rect.XDim)},{StepWriter.Real(rect.YDim)}");
+        }
+        else if (solid.Profile is IfcCircleProfileDef circ)
+        {
+            string placement2dRef = "$";
+            if (Math.Abs(circ.Position.X) > 1e-9 || Math.Abs(circ.Position.Y) > 1e-9)
+            {
+                int pt2dId = w.Add("IFCCARTESIANPOINT", StepWriter.List(StepWriter.Real(circ.Position.X), StepWriter.Real(circ.Position.Y)));
+                int pl2dId = w.Add("IFCAXIS2PLACEMENT2D", $"{StepWriter.Ref(pt2dId)},$");
+                placement2dRef = StepWriter.Ref(pl2dId);
+            }
+            profileId = w.Add("IFCCIRCLEPROFILEDEF", $".AREA.,{StepWriter.Str(circ.ProfileName)},{placement2dRef},{StepWriter.Real(circ.Radius)}");
+        }
+        else if (solid.Profile is IfcArbitraryClosedProfileDef poly)
+        {
+            var ptIds = new List<int>(poly.CurvePoints.Count);
+            foreach (var pt in poly.CurvePoints)
+            {
+                ptIds.Add(w.Add("IFCCARTESIANPOINT", StepWriter.List(StepWriter.Real(pt.X), StepWriter.Real(pt.Y))));
+            }
+            int polyLineId = w.Add("IFCPOLYLINE", StepWriter.List(ptIds.Select(StepWriter.Ref)));
+            profileId = w.Add("IFCARBITRARYCLOSEDPROFILEDEF", $".AREA.,{StepWriter.Str(poly.ProfileName)},{StepWriter.Ref(polyLineId)}");
+        }
+        else
+        {
+            throw new NotSupportedException($"Profile type {solid.Profile.GetType().Name} is not supported.");
+        }
+
+        int solidPtId = w.Add("IFCCARTESIANPOINT", StepWriter.List(StepWriter.Real(solid.Position.X), StepWriter.Real(solid.Position.Y), StepWriter.Real(solid.Position.Z)));
+        int solidPlacementId = w.Add("IFCAXIS2PLACEMENT3D", $"{StepWriter.Ref(solidPtId)},$,$");
+        int dirId = w.Add("IFCDIRECTION", StepWriter.List(StepWriter.Real(solid.Direction.X), StepWriter.Real(solid.Direction.Y), StepWriter.Real(solid.Direction.Z)));
+
+        return w.Add("IFCEXTRUDEDAREASOLID", $"{StepWriter.Ref(profileId)},{StepWriter.Ref(solidPlacementId)},{StepWriter.Ref(dirId)},{StepWriter.Real(solid.Depth)}");
+    }
+
+    private static IfcMesh? ParseGeometry(
         StepFile step,
         int shapeDefId,
         string meshName,
         Dictionary<int, IfcMaterial> geomToMaterialMap,
-        out IfcMaterial? material)
+        out IfcMaterial? material,
+        out IfcExtrudedAreaSolid? solid)
     {
         material = null;
+        solid = null;
         var shapeDef = step.Find(shapeDefId);
         if (shapeDef is null) return null;
 
@@ -743,10 +993,134 @@ public sealed class IfcModel
                         return IfcMesh.Create(itemId, meshName, vertices, indices);
                     }
                 }
+
+                // C. IFCEXTRUDEDAREASOLID
+                if (itemEnt.Type.Equals("IFCEXTRUDEDAREASOLID", StringComparison.OrdinalIgnoreCase))
+                {
+                    int? profileId = itemEnt.GetRef(0);
+                    int? posPlacementId = itemEnt.GetRef(1);
+                    int? dirId = itemEnt.GetRef(2);
+                    double depth = itemEnt.GetReal(3) ?? 0.0;
+
+                    IfcProfileDef? profile = null;
+                    if (profileId.HasValue)
+                    {
+                        var profEnt = step.Find(profileId.Value);
+                        if (profEnt is not null)
+                        {
+                            string pName = profEnt.GetString(1) ?? "Profile";
+                            if (profEnt.Type.Equals("IFCRECTANGLEPROFILEDEF", StringComparison.OrdinalIgnoreCase))
+                            {
+                                double xDim = profEnt.GetReal(3) ?? 0.0;
+                                double yDim = profEnt.GetReal(4) ?? 0.0;
+                                var pos2d = ParsePlacement2D(step, profEnt.GetRef(2));
+                                profile = new IfcRectangleProfileDef(xDim, yDim, pos2d, pName);
+                            }
+                            else if (profEnt.Type.Equals("IFCCIRCLEPROFILEDEF", StringComparison.OrdinalIgnoreCase))
+                            {
+                                double radius = profEnt.GetReal(3) ?? 0.0;
+                                var pos2d = ParsePlacement2D(step, profEnt.GetRef(2));
+                                profile = new IfcCircleProfileDef(radius, pos2d, pName);
+                            }
+                            else if (profEnt.Type.Equals("IFCARBITRARYCLOSEDPROFILEDEF", StringComparison.OrdinalIgnoreCase))
+                            {
+                                int? curveId = profEnt.GetRef(2);
+                                var pts = ParsePolylinePoints(step, curveId);
+                                profile = new IfcArbitraryClosedProfileDef(pts, pName);
+                            }
+                        }
+                    }
+
+                    if (profile is not null)
+                    {
+                        var pos3d = ParsePlacement3D(step, posPlacementId);
+                        var dir3d = ParseDirection(step, dirId);
+                        var extrudedSolid = new IfcExtrudedAreaSolid(profile, depth, pos3d, dir3d);
+                        solid = extrudedSolid;
+                        return extrudedSolid.ToMesh(16, meshName);
+                    }
+                }
             }
         }
 
         return null;
+    }
+
+    private static IfcVector3 ParsePlacement2D(StepFile step, int? placementId)
+    {
+        if (!placementId.HasValue) return IfcVector3.Zero;
+        var plEnt = step.Find(placementId.Value);
+        if (plEnt is null) return IfcVector3.Zero;
+
+        int? ptId = plEnt.GetRef(0);
+        if (!ptId.HasValue) return IfcVector3.Zero;
+        var ptEnt = step.Find(ptId.Value);
+        if (ptEnt is null) return IfcVector3.Zero;
+
+        string coordStr = ptEnt.GetRaw(0) ?? string.Empty;
+        var coords = StepEntity.ParseArguments(coordStr.Trim('(', ')'));
+        double x = 0.0, y = 0.0;
+        if (coords.Count > 0 && double.TryParse(coords[0], NumberStyles.Float, CultureInfo.InvariantCulture, out double cx)) x = cx;
+        if (coords.Count > 1 && double.TryParse(coords[1], NumberStyles.Float, CultureInfo.InvariantCulture, out double cy)) y = cy;
+        return new IfcVector3(x, y, 0);
+    }
+
+    private static IfcVector3 ParsePlacement3D(StepFile step, int? placementId)
+    {
+        if (!placementId.HasValue) return IfcVector3.Zero;
+        var plEnt = step.Find(placementId.Value);
+        if (plEnt is null) return IfcVector3.Zero;
+
+        int? ptId = plEnt.GetRef(0);
+        if (!ptId.HasValue) return IfcVector3.Zero;
+        var ptEnt = step.Find(ptId.Value);
+        if (ptEnt is null) return IfcVector3.Zero;
+
+        string coordStr = ptEnt.GetRaw(0) ?? string.Empty;
+        var coords = StepEntity.ParseArguments(coordStr.Trim('(', ')'));
+        double x = 0.0, y = 0.0, z = 0.0;
+        if (coords.Count > 0 && double.TryParse(coords[0], NumberStyles.Float, CultureInfo.InvariantCulture, out double cx)) x = cx;
+        if (coords.Count > 1 && double.TryParse(coords[1], NumberStyles.Float, CultureInfo.InvariantCulture, out double cy)) y = cy;
+        if (coords.Count > 2 && double.TryParse(coords[2], NumberStyles.Float, CultureInfo.InvariantCulture, out double cz)) z = cz;
+        return new IfcVector3(x, y, z);
+    }
+
+    private static IfcVector3 ParseDirection(StepFile step, int? dirId)
+    {
+        if (!dirId.HasValue) return IfcVector3.UnitZ;
+        var dirEnt = step.Find(dirId.Value);
+        if (dirEnt is null) return IfcVector3.UnitZ;
+
+        string raw = dirEnt.GetRaw(0) ?? string.Empty;
+        var parts = StepEntity.ParseArguments(raw.Trim('(', ')'));
+        double x = 0.0, y = 0.0, z = 1.0;
+        if (parts.Count > 0 && double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out double dx)) x = dx;
+        if (parts.Count > 1 && double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out double dy)) y = dy;
+        if (parts.Count > 2 && double.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out double dz)) z = dz;
+        return new IfcVector3(x, y, z);
+    }
+
+    private static List<IfcVector3> ParsePolylinePoints(StepFile step, int? curveId)
+    {
+        var result = new List<IfcVector3>();
+        if (!curveId.HasValue) return result;
+        var curveEnt = step.Find(curveId.Value);
+        if (curveEnt is null) return result;
+
+        var ptIds = curveEnt.GetRefList(0);
+        foreach (int ptId in ptIds)
+        {
+            var ptEnt = step.Find(ptId);
+            if (ptEnt is null) continue;
+            string coordStr = ptEnt.GetRaw(0) ?? string.Empty;
+            var coords = StepEntity.ParseArguments(coordStr.Trim('(', ')'));
+            double x = 0.0, y = 0.0, z = 0.0;
+            if (coords.Count > 0 && double.TryParse(coords[0], NumberStyles.Float, CultureInfo.InvariantCulture, out double cx)) x = cx;
+            if (coords.Count > 1 && double.TryParse(coords[1], NumberStyles.Float, CultureInfo.InvariantCulture, out double cy)) y = cy;
+            if (coords.Count > 2 && double.TryParse(coords[2], NumberStyles.Float, CultureInfo.InvariantCulture, out double cz)) z = cz;
+            result.Add(new IfcVector3(x, y, z));
+        }
+        return result;
     }
 
     private static string ExtractNominalValue(string? rawVal)
@@ -787,6 +1161,7 @@ public sealed class IfcModel
             || type.StartsWith("IFCPLATE", StringComparison.OrdinalIgnoreCase)
             || type.StartsWith("IFCCOVERING", StringComparison.OrdinalIgnoreCase)
             || type.StartsWith("IFCFURNISHINGELEMENT", StringComparison.OrdinalIgnoreCase)
+            || type.StartsWith("IFCOPENINGELEMENT", StringComparison.OrdinalIgnoreCase)
             || type.Equals("IFCBUILDINGELEMENTPROXY", StringComparison.OrdinalIgnoreCase);
     }
 
@@ -896,6 +1271,7 @@ public sealed class IfcModel
             "IFCROOF" => w.Add("IFCROOF", $"{commonArgs},.FLAT_ROOF."),
             "IFCPIPESEGMENT" => w.Add("IFCPIPESEGMENT", commonArgs),
             "IFCDUCTSEGMENT" => w.Add("IFCDUCTSEGMENT", commonArgs),
+            "IFCOPENINGELEMENT" => w.Add("IFCOPENINGELEMENT", $"{commonArgs},.OPENING."),
             _ => w.Add("IFCBUILDINGELEMENTPROXY", $"{commonArgs},.ELEMENT."),
         };
     }
@@ -904,6 +1280,8 @@ public sealed class IfcModel
     {
         string target = $"{name} {materialName}";
 
+        if (ContainsAny(target, "проем", "отверстие", "opening", "cutout", "void"))
+            return "IFCOPENINGELEMENT";
         if (ContainsAny(target, "стена", "стены", "wall", "walls"))
             return "IFCWALL";
         if (ContainsAny(target, "перекрытие", "перекрытия", "плита", "плиты", "floor", "floors", "slab", "slabs"))

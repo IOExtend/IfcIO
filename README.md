@@ -98,14 +98,49 @@ var indices = new int[]
 
 var wall = model.AddMesh("Стена монолитная 200", vertices, indices, concrete, floor1);
 
-// Attach Property Sets
-var pset = wall.GetOrCreatePropertySet("Pset_WallCommon");
-pset.Add("LoadBearing", true);
-pset.Add("Thickness", 200.0);
-pset.Add("FireRating", "REI 120");
+// Add parametric swept solids (walls, columns)
+var paramWall = model.AddExtrudedRectangle(
+    name: "ExtrudedWall",
+    xDim: 300.0,
+    yDim: 6000.0,
+    depth: 3000.0,
+    material: concrete,
+    storey: floor1);
+
+// Add opening and window filling
+var openingSolid = new IfcExtrudedAreaSolid(
+    new IfcRectangleProfileDef(300.0, 1200.0),
+    depth: 1500.0,
+    position: new IfcVector3(0, 2000, 900));
+
+var window = new IfcElement
+{
+    Id = 101,
+    Name = "Window1",
+    IfcType = "IFCWINDOW",
+    Solid = new IfcExtrudedAreaSolid(new IfcRectangleProfileDef(100.0, 1180.0), depth: 1480.0),
+};
+
+model.AddOpening(paramWall, "WallOpening", solid: openingSolid, filling: window);
+
+// Attach standard buildingSMART Property Sets
+paramWall.PropertySets.Add(StandardPsets.WallCommon(
+    reference: "W-01",
+    loadBearing: true,
+    isExternal: true,
+    fireRating: "REI 120",
+    thermalTransmittance: 0.28));
+
+// Validate model integrity
+var validation = model.Validate();
+if (!validation.IsValid)
+{
+    foreach (var issue in validation.Issues)
+        Console.WriteLine($"[{issue.Severity}] {issue.RuleId}: {issue.Message}");
+}
 
 // Save to multiple formats with one call:
-model.Save("Building.ifc");          // Standard STEP file
+model.Save("Building.ifc");          // Standard STEP file (IFCEXTRUDEDAREASOLID, IFCRELVOIDSELEMENT)
 model.SaveZip("Building.ifczip");    // Compressed PKZip archive
 model.SaveGlb("Building.glb");       // Binary glTF 2.0 with PBR materials
 model.SaveObj("Building.obj");       // Wavefront OBJ + MTL

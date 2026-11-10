@@ -65,7 +65,8 @@ public static class IfcObjExporter
 
             foreach (var elem in storey.Elements)
             {
-                if (elem.Mesh is null || elem.Mesh.Vertices.Count == 0 || elem.Mesh.Indices.Count == 0)
+                var mesh = elem.GetEffectiveMesh();
+                if (mesh is null || mesh.Vertices.Count == 0 || mesh.Indices.Count == 0)
                 {
                     continue;
                 }
@@ -84,14 +85,14 @@ public static class IfcObjExporter
                     objWriter.WriteLine($"usemtl {SanitizeName(elem.Material.Name)}");
                 }
 
-                var vertices = elem.Mesh.Vertices;
+                var vertices = mesh.Vertices;
                 for (int v = 0; v < vertices.Count; v++)
                 {
                     var pt = vertices[v];
                     objWriter.WriteLine($"v {pt.X.ToString("F4", inv)} {pt.Y.ToString("F4", inv)} {pt.Z.ToString("F4", inv)}");
                 }
 
-                var indices = elem.Mesh.Indices;
+                var indices = mesh.Indices;
                 for (int i = 0; i <= indices.Count - 3; i += 3)
                 {
                     int i0 = vertexOffset + indices[i];

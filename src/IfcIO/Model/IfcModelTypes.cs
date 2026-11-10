@@ -108,8 +108,15 @@ public class IfcElement
 
     public IfcTypeProduct? TypeProduct { get; set; }
     public IfcMesh? Mesh { get; set; }
+    public IfcExtrudedAreaSolid? Solid { get; set; }
     public IfcMaterial? Material { get; set; }
     public List<IfcPropertySet> PropertySets { get; } = [];
+    public List<IfcOpeningElement> Openings { get; } = [];
+
+    /// <summary>
+    /// Gets the polygon mesh representation of the element, either explicitly assigned or generated on demand from its parametric solid.
+    /// </summary>
+    public IfcMesh? GetEffectiveMesh() => Mesh ?? Solid?.ToMesh();
 
     public IfcPropertySet GetOrCreatePropertySet(string name)
     {
@@ -119,5 +126,23 @@ public class IfcElement
         var pset = new IfcPropertySet(name);
         PropertySets.Add(pset);
         return pset;
+    }
+}
+
+/// <summary>
+/// Represents a void or opening in a building element (such as a wall or slab cutout),
+/// conforming to buildingSMART standard IFCOPENINGELEMENT.
+/// </summary>
+public sealed class IfcOpeningElement : IfcElement
+{
+    /// <summary>
+    /// An optional filling element (e.g. Window or Door) installed inside this opening.
+    /// Maps to buildingSMART IFCRELFILLSELEMENT.
+    /// </summary>
+    public IfcElement? Filling { get; set; }
+
+    public IfcOpeningElement()
+    {
+        IfcType = "IFCOPENINGELEMENT";
     }
 }

@@ -158,6 +158,28 @@ public static class IfcValidator
             {
                 ValidateMesh(element.Mesh, elemDesc, issues);
             }
+            else if (element.Solid is not null)
+            {
+                ValidateSolid(element.Solid, elemDesc, issues);
+            }
+
+            // Openings validation
+            if (element.Openings.Count > 0)
+            {
+                foreach (var opening in element.Openings)
+                {
+                    string opDesc = $"Opening '{opening.Name}' (ID {opening.Id}) in {elemDesc}";
+                    CheckGlobalId(opening.GlobalId, opDesc);
+                    if (opening.Mesh is not null)
+                    {
+                        ValidateMesh(opening.Mesh, opDesc, issues);
+                    }
+                    else if (opening.Solid is not null)
+                    {
+                        ValidateSolid(opening.Solid, opDesc, issues);
+                    }
+                }
+            }
 
             // Property set validation
             ValidatePropertySets(element.PropertySets, elemDesc, issues);
@@ -174,6 +196,57 @@ public static class IfcValidator
         }
 
         return new IfcValidationResult { Issues = issues };
+    }
+
+    private static void ValidateSolid(IfcExtrudedAreaSolid solid, string entityName, List<IfcValidationIssue> issues)
+    {
+        if (solid.Depth <= 0 || !double.IsFinite(solid.Depth))
+        {
+            issues.Add(new IfcValidationIssue
+            {
+                RuleId = "IFC_SOLID_DEPTH",
+                Severity = IfcIssueSeverity.Error,
+                Message = $"Extruded solid depth must be a positive finite number (actual: {solid.Depth}).",
+                EntityName = entityName
+            });
+        }
+
+        if (solid.Profile is null)
+        {
+            issues.Add(new IfcValidationIssue
+            {
+                RuleId = "IFC_SOLID_PROFILE",
+                Severity = IfcIssueSeverity.Error,
+                Message = "Extruded solid has null profile.",
+                EntityName = entityName
+            });
+        }
+        else if (solid.Profile is IfcRectangleProfileDef rect)
+        {
+            if (rect.XDim <= 0 || !double.IsFinite(rect.XDim) || rect.YDim <= 0 || !double.IsFinite(rect.YDim))
+            {
+                issues.Add(new IfcValidationIssue
+                {
+                    RuleId = "IFC_PROFILE_DIMENSIONS",
+                    Severity = IfcIssueSeverity.Error,
+                    Message = $"Rectangle profile dimensions must be positive finite numbers (XDim: {rect.XDim}, YDim: {rect.YDim}).",
+                    EntityName = entityName
+                });
+            }
+        }
+        else if (solid.Profile is IfcCircleProfileDef circ)
+        {
+            if (circ.Radius <= 0 || !double.IsFinite(circ.Radius))
+            {
+                issues.Add(new IfcValidationIssue
+                {
+                    RuleId = "IFC_PROFILE_DIMENSIONS",
+                    Severity = IfcIssueSeverity.Error,
+                    Message = $"Circle profile radius must be a positive finite number (actual: {circ.Radius}).",
+                    EntityName = entityName
+                });
+            }
+        }
     }
 
     private static void ValidateMesh(IfcMesh mesh, string entityName, List<IfcValidationIssue> issues)

@@ -76,7 +76,8 @@ public static class IfcGlbExporter
 
             foreach (var elem in storey.Elements)
             {
-                if (elem.Mesh is null || elem.Mesh.Vertices.Count == 0 || elem.Mesh.Indices.Count == 0)
+                var mesh = elem.GetEffectiveMesh();
+                if (mesh is null || mesh.Vertices.Count == 0 || mesh.Indices.Count == 0)
                 {
                     continue;
                 }
@@ -103,7 +104,7 @@ public static class IfcGlbExporter
                     matId = existingMat;
                 }
 
-                int meshIndex = PackMesh(elem.Mesh, matId, binMs, bufferViews, accessors, gltfMeshes);
+                int meshIndex = PackMesh(mesh, matId, binMs, bufferViews, accessors, gltfMeshes);
 
                 int elemNodeIndex = gltfNodes.Count;
                 gltfNodes.Add(new NodeDef

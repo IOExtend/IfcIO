@@ -2,7 +2,36 @@
 
 All notable changes to the `IfcIO` library are documented in this file.
 
-## [0.2.0] - 2026-11-10
+## [0.3.0] - 2026-11-10
+
+### Major Additions & Capabilities
+- **Parametric Swept Solids (`IfcExtrudedAreaSolid`)**:
+  - `IfcProfileDef` base hierarchy with parameterized profiles:
+    - `IfcRectangleProfileDef` (`XDim`, `YDim`, optional 2D position placement).
+    - `IfcCircleProfileDef` (`Radius`, optional 2D position placement).
+    - `IfcArbitraryClosedProfileDef` (boundary polygon points).
+  - Sweeps profiles along 3D extrusion direction vectors with custom depths.
+  - Automatic on-demand polygon mesh generation (`solid.ToMesh()`) supporting robust ear-clipping polygon triangulation.
+  - Fluent model helpers: `model.AddExtrudedRectangle(...)` and `model.AddExtrudedCircle(...)`.
+  - Full ISO 10303-21 STEP physical file serialization (`IFCEXTRUDEDAREASOLID`, `IFCRECTANGLEPROFILEDEF`, `IFCCIRCLEPROFILEDEF`, `IFCARBITRARYCLOSEDPROFILEDEF`) under `'SweptSolid'` representation and deserialization.
+- **Parametric Openings & Voids (`IfcOpeningElement`)**:
+  - `IfcOpeningElement` model type representing architectural voids and cutouts (walls, slabs).
+  - Support for filling elements (`opening.Filling`, e.g. `IfcWindow`, `IfcDoor`) installed inside the void.
+  - Serialization and deserialization of buildingSMART relationships: `IFCRELVOIDSELEMENT` and `IFCRELFILLSELEMENT`.
+  - Helper method `model.AddOpening(...)` with automatic host element linkage.
+- **Standard buildingSMART Property Sets (`StandardPsets`)**:
+  - Strongly-typed builders for standard Psets:
+    - `WallCommon` / `Pset_WallCommon`
+    - `SlabCommon` / `Pset_SlabCommon`
+    - `ColumnCommon` / `Pset_ColumnCommon`
+    - `BeamCommon` / `Pset_BeamCommon`
+    - `WindowCommon` / `Pset_WindowCommon`
+    - `DoorCommon` / `Pset_DoorCommon`
+- **Model Validation Engine (`IfcValidator`)**:
+  - Validates spatial structure, 22-char buildingSMART GlobalId format and uniqueness, mesh integrity, and property sets.
+  - Validates swept solids: finite positive depths (`IFC_SOLID_DEPTH`), valid profile dimensions (`IFC_PROFILE_DIMENSIONS`), and openings.
+- **Direct 3D Rendering of Swept Solids**:
+  - `GetEffectiveMesh()` integration into `IfcGlbExporter` and `IfcObjExporter`, enabling instant visualization of swept solids in glTF 2.0 / WebGL / OBJ without manual triangulation.
 
 ### Major Additions & Capabilities
 - **Cross-Platform CLI (`ifcio`)**:

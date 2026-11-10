@@ -417,6 +417,36 @@ Examples:
         int tessCount = step.OfType("IFCTRIANGULATEDFACESET").Count();
         Console.WriteLine($"  ✓ Geometry items: {brepCount} FacetedBRep, {tessCount} TriangulatedFaceSet");
 
+        // 4. In-depth model rules validation
+        try
+        {
+            var model = IfcModel.Open(inputPath);
+            var valResult = model.Validate();
+            foreach (var issue in valResult.Issues)
+            {
+                if (issue.Severity == Validation.IfcIssueSeverity.Error)
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine($"  [ERROR] ({issue.RuleId}) {(issue.EntityName is not null ? $"{issue.EntityName}: " : "")}{issue.Message}");
+                    Console.ResetColor();
+                    errors++;
+                }
+                else if (issue.Severity == Validation.IfcIssueSeverity.Warning)
+                {
+                    Console.ForegroundColor = ConsoleColor.Yellow;
+                    Console.WriteLine($"  [WARN] ({issue.RuleId}) {(issue.EntityName is not null ? $"{issue.EntityName}: " : "")}{issue.Message}");
+                    Console.ResetColor();
+                    warnings++;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine($"  [WARN] High-level ingestion warning: {ex.Message}");
+            Console.ResetColor();
+        }
+
         sw.Stop();
         Console.WriteLine();
         if (errors == 0)

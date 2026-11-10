@@ -117,6 +117,9 @@ public sealed class IfcModel
         return element;
     }
 
+    /// <summary>Validates the model against buildingSMART MVD and geometric integrity rules.</summary>
+    public Validation.IfcValidationResult Validate() => Validation.IfcValidator.Validate(this);
+
     /// <summary>Serializes the IFC model to a file on disk (.ifc or .ifczip).</summary>
     public void Save(string path)
     {

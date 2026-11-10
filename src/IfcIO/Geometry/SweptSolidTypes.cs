@@ -474,3 +474,166 @@ public sealed class IfcRevolvedAreaSolid
         return IfcMesh.Create(0, meshName, vertices, indices);
     }
 }
+
+/// <summary>
+/// A parameterized standard structural steel I-beam / H-beam 2D profile,
+/// conforming to buildingSMART standard IFCISHAPEPROFILEDEF.
+/// </summary>
+public sealed class IfcIShapeProfileDef : IfcProfileDef
+{
+    public double OverallWidth { get; set; }
+    public double OverallDepth { get; set; }
+    public double WebThickness { get; set; }
+    public double FlangeThickness { get; set; }
+    public double? FilletRadius { get; set; }
+    public IfcVector3 Position { get; set; } = IfcVector3.Zero;
+
+    public IfcIShapeProfileDef() { }
+
+    public IfcIShapeProfileDef(
+        double overallWidth,
+        double overallDepth,
+        double webThickness,
+        double flangeThickness,
+        double? filletRadius = null,
+        IfcVector3? position = null,
+        string? name = null)
+    {
+        OverallWidth = overallWidth;
+        OverallDepth = overallDepth;
+        WebThickness = webThickness;
+        FlangeThickness = flangeThickness;
+        FilletRadius = filletRadius;
+        Position = position ?? IfcVector3.Zero;
+        ProfileName = name;
+    }
+
+    public override IReadOnlyList<IfcVector3> GetBoundaryPoints(int segments = 16)
+    {
+        double hB = OverallWidth * 0.5;
+        double hH = OverallDepth * 0.5;
+        double hTw = WebThickness * 0.5;
+        double tf = FlangeThickness;
+        double px = Position.X;
+        double py = Position.Y;
+
+        return
+        [
+            new(px - hB, py + hH, 0),
+            new(px + hB, py + hH, 0),
+            new(px + hB, py + hH - tf, 0),
+            new(px + hTw, py + hH - tf, 0),
+            new(px + hTw, py - hH + tf, 0),
+            new(px + hB, py - hH + tf, 0),
+            new(px + hB, py - hH, 0),
+            new(px - hB, py - hH, 0),
+            new(px - hB, py - hH + tf, 0),
+            new(px - hTw, py - hH + tf, 0),
+            new(px - hTw, py + hH - tf, 0),
+            new(px - hB, py + hH - tf, 0),
+        ];
+    }
+}
+
+/// <summary>
+/// A parameterized standard structural steel angle / L-shape 2D profile,
+/// conforming to buildingSMART standard IFCLSHAPEPROFILEDEF.
+/// </summary>
+public sealed class IfcLShapeProfileDef : IfcProfileDef
+{
+    public double Depth { get; set; }
+    public double Width { get; set; }
+    public double Thickness { get; set; }
+    public double? FilletRadius { get; set; }
+    public IfcVector3 Position { get; set; } = IfcVector3.Zero;
+
+    public IfcLShapeProfileDef() { }
+
+    public IfcLShapeProfileDef(
+        double depth,
+        double width,
+        double thickness,
+        double? filletRadius = null,
+        IfcVector3? position = null,
+        string? name = null)
+    {
+        Depth = depth;
+        Width = width;
+        Thickness = thickness;
+        FilletRadius = filletRadius;
+        Position = position ?? IfcVector3.Zero;
+        ProfileName = name;
+    }
+
+    public override IReadOnlyList<IfcVector3> GetBoundaryPoints(int segments = 16)
+    {
+        double px = Position.X;
+        double py = Position.Y;
+        double t = Thickness;
+
+        return
+        [
+            new(px, py, 0),
+            new(px + Width, py, 0),
+            new(px + Width, py + t, 0),
+            new(px + t, py + t, 0),
+            new(px + t, py + Depth, 0),
+            new(px, py + Depth, 0),
+        ];
+    }
+}
+
+/// <summary>
+/// A parameterized standard structural steel channel / U-shape 2D profile,
+/// conforming to buildingSMART standard IFCUSHAPEPROFILEDEF.
+/// </summary>
+public sealed class IfcUShapeProfileDef : IfcProfileDef
+{
+    public double Depth { get; set; }
+    public double FlangeWidth { get; set; }
+    public double WebThickness { get; set; }
+    public double FlangeThickness { get; set; }
+    public double? FilletRadius { get; set; }
+    public IfcVector3 Position { get; set; } = IfcVector3.Zero;
+
+    public IfcUShapeProfileDef() { }
+
+    public IfcUShapeProfileDef(
+        double depth,
+        double flangeWidth,
+        double webThickness,
+        double flangeThickness,
+        double? filletRadius = null,
+        IfcVector3? position = null,
+        string? name = null)
+    {
+        Depth = depth;
+        FlangeWidth = flangeWidth;
+        WebThickness = webThickness;
+        FlangeThickness = flangeThickness;
+        FilletRadius = filletRadius;
+        Position = position ?? IfcVector3.Zero;
+        ProfileName = name;
+    }
+
+    public override IReadOnlyList<IfcVector3> GetBoundaryPoints(int segments = 16)
+    {
+        double px = Position.X;
+        double py = Position.Y;
+        double hH = Depth * 0.5;
+        double tw = WebThickness;
+        double tf = FlangeThickness;
+
+        return
+        [
+            new(px, py - hH, 0),
+            new(px + FlangeWidth, py - hH, 0),
+            new(px + FlangeWidth, py - hH + tf, 0),
+            new(px + tw, py - hH + tf, 0),
+            new(px + tw, py + hH - tf, 0),
+            new(px + FlangeWidth, py + hH - tf, 0),
+            new(px + FlangeWidth, py + hH, 0),
+            new(px, py + hH, 0),
+        ];
+    }
+}

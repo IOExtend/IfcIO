@@ -166,6 +166,10 @@ public static class IfcValidator
             {
                 ValidateRevolvedSolid(element.RevolvedSolid, elemDesc, issues);
             }
+            else if (element.BooleanResult is not null)
+            {
+                ValidateCsg(element.BooleanResult, elemDesc, issues);
+            }
 
             // Openings validation
             if (element.Openings.Count > 0)
@@ -288,6 +292,56 @@ public static class IfcValidator
             CheckGlobalId(grp.GlobalId, grpDesc);
         }
 
+        // 8. MEP Distribution Ports validation
+        foreach (var port in model.AllPorts)
+        {
+            string portDesc = $"DistributionPort '{port.Name}' (ID {port.Id})";
+            CheckGlobalId(port.GlobalId, portDesc);
+            if (port.FlowDirection == IfcFlowDirection.NotDefined)
+            {
+                issues.Add(new IfcValidationIssue
+                {
+                    RuleId = "IFC_PORT_DIRECTION",
+                    Severity = IfcIssueSeverity.Warning,
+                    Message = $"Distribution port '{port.Name}' flow direction is NotDefined.",
+                    EntityName = portDesc,
+                });
+            }
+        }
+
+        // 9. Material Layer Sets validation
+        foreach (var ls in model.MaterialLayerSets)
+        {
+            string lsDesc = $"MaterialLayerSet '{ls.LayerSetName}'";
+            if (ls.Layers.Count == 0)
+            {
+                issues.Add(new IfcValidationIssue
+                {
+                    RuleId = "IFC_LAYER_SET_EMPTY",
+                    Severity = IfcIssueSeverity.Warning,
+                    Message = $"Material layer set '{ls.LayerSetName}' contains no layers.",
+                    EntityName = lsDesc,
+                });
+            }
+            else
+            {
+                for (int i = 0; i < ls.Layers.Count; i++)
+                {
+                    var layer = ls.Layers[i];
+                    if (layer.LayerThickness <= 0 || !double.IsFinite(layer.LayerThickness))
+                    {
+                        issues.Add(new IfcValidationIssue
+                        {
+                            RuleId = "IFC_LAYER_THICKNESS",
+                            Severity = IfcIssueSeverity.Error,
+                            Message = $"Material layer #{i + 1} '{layer.Name ?? layer.Material.Name}' thickness must be positive and finite (actual: {layer.LayerThickness}).",
+                            EntityName = lsDesc,
+                        });
+                    }
+                }
+            }
+        }
+
         return new IfcValidationResult { Issues = issues };
     }
 
@@ -371,6 +425,116 @@ public static class IfcValidator
                     EntityName = entityName
                 });
             }
+        }
+        else if (profile is IfcIShapeProfileDef ishape)
+        {
+            if (ishape.OverallWidth <= 0 || !double.IsFinite(ishape.OverallWidth) ||
+                ishape.OverallDepth <= 0 || !double.IsFinite(ishape.OverallDepth) ||
+                ishape.WebThickness <= 0 || !double.IsFinite(ishape.WebThickness) ||
+                ishape.FlangeThickness <= 0 || !double.IsFinite(ishape.FlangeThickness))
+            {
+                issues.Add(new IfcValidationIssue
+                {
+                    RuleId = "IFC_PROFILE_DIMENSIONS",
+                    Severity = IfcIssueSeverity.Error,
+                    Message = $"I-Shape profile dimensions must be positive finite numbers (Width: {ishape.OverallWidth}, Depth: {ishape.OverallDepth}, Web: {ishape.WebThickness}, Flange: {ishape.FlangeThickness}).",
+                    EntityName = entityName
+                });
+            }
+            else if (2.0 * ishape.FlangeThickness >= ishape.OverallDepth || ishape.WebThickness >= ishape.OverallWidth)
+            {
+                issues.Add(new IfcValidationIssue
+                {
+                    RuleId = "IFC_PROFILE_SECTION",
+                    Severity = IfcIssueSeverity.Error,
+                    Message = $"I-Shape profile violation: 2*FlangeThickness ({2.0 * ishape.FlangeThickness}) must be < Depth ({ishape.OverallDepth}) and WebThickness ({ishape.WebThickness}) < Width ({ishape.OverallWidth}).",
+                    EntityName = entityName
+                });
+            }
+        }
+        else if (profile is IfcLShapeProfileDef lshape)
+        {
+            if (lshape.Depth <= 0 || !double.IsFinite(lshape.Depth) ||
+                lshape.Width <= 0 || !double.IsFinite(lshape.Width) ||
+                lshape.Thickness <= 0 || !double.IsFinite(lshape.Thickness))
+            {
+                issues.Add(new IfcValidationIssue
+                {
+                    RuleId = "IFC_PROFILE_DIMENSIONS",
+                    Severity = IfcIssueSeverity.Error,
+                    Message = $"L-Shape profile dimensions must be positive finite numbers (Depth: {lshape.Depth}, Width: {lshape.Width}, Thickness: {lshape.Thickness}).",
+                    EntityName = entityName
+                });
+            }
+            else if (lshape.Thickness >= lshape.Width || lshape.Thickness >= lshape.Depth)
+            {
+                issues.Add(new IfcValidationIssue
+                {
+                    RuleId = "IFC_PROFILE_SECTION",
+                    Severity = IfcIssueSeverity.Error,
+                    Message = $"L-Shape profile violation: Thickness ({lshape.Thickness}) must be less than Width ({lshape.Width}) and Depth ({lshape.Depth}).",
+                    EntityName = entityName
+                });
+            }
+        }
+        else if (profile is IfcUShapeProfileDef ushape)
+        {
+            if (ushape.Depth <= 0 || !double.IsFinite(ushape.Depth) ||
+                ushape.FlangeWidth <= 0 || !double.IsFinite(ushape.FlangeWidth) ||
+                ushape.WebThickness <= 0 || !double.IsFinite(ushape.WebThickness) ||
+                ushape.FlangeThickness <= 0 || !double.IsFinite(ushape.FlangeThickness))
+            {
+                issues.Add(new IfcValidationIssue
+                {
+                    RuleId = "IFC_PROFILE_DIMENSIONS",
+                    Severity = IfcIssueSeverity.Error,
+                    Message = $"U-Shape profile dimensions must be positive finite numbers (Depth: {ushape.Depth}, FlangeWidth: {ushape.FlangeWidth}, Web: {ushape.WebThickness}, Flange: {ushape.FlangeThickness}).",
+                    EntityName = entityName
+                });
+            }
+            else if (2.0 * ushape.FlangeThickness >= ushape.Depth || ushape.WebThickness >= ushape.FlangeWidth)
+            {
+                issues.Add(new IfcValidationIssue
+                {
+                    RuleId = "IFC_PROFILE_SECTION",
+                    Severity = IfcIssueSeverity.Error,
+                    Message = $"U-Shape profile violation: 2*FlangeThickness ({2.0 * ushape.FlangeThickness}) must be < Depth ({ushape.Depth}) and WebThickness ({ushape.WebThickness}) < FlangeWidth ({ushape.FlangeWidth}).",
+                    EntityName = entityName
+                });
+            }
+        }
+    }
+
+    private static void ValidateCsg(IfcBooleanResult csg, string entityName, List<IfcValidationIssue> issues)
+    {
+        if (csg.FirstSolid is null && csg.FirstRevolved is null && csg.FirstMesh is null)
+        {
+            issues.Add(new IfcValidationIssue
+            {
+                RuleId = "IFC_CSG_OPERAND_MISSING",
+                Severity = IfcIssueSeverity.Error,
+                Message = "CSG Boolean result must have a valid first operand solid or mesh.",
+                EntityName = entityName
+            });
+        }
+        else if (csg.FirstSolid is not null)
+        {
+            ValidateSolid(csg.FirstSolid, entityName, issues);
+        }
+
+        if (csg.SecondHalfSpace is null && csg.SecondSolid is null && csg.SecondMesh is null)
+        {
+            issues.Add(new IfcValidationIssue
+            {
+                RuleId = "IFC_CSG_OPERAND_MISSING",
+                Severity = IfcIssueSeverity.Error,
+                Message = "CSG Boolean result must have a valid second operand (clipping half-space, cutting solid, or mesh).",
+                EntityName = entityName
+            });
+        }
+        else if (csg.SecondSolid is not null)
+        {
+            ValidateSolid(csg.SecondSolid, entityName, issues);
         }
     }
 

@@ -38,6 +38,16 @@ Built clean-room under the [IOExtend](https://github.com/IOExtend) organization 
   - Property sets (`IfcPropertySet`, `IfcPropertySingleValue`) with typed values (`IfcText`, `IfcInteger`, `IfcReal`, `IfcBoolean`).
   - Reusable Type Products (`IfcTypeProduct`) linked via `IfcRelDefinesByType`.
   - Surface styles and materials (`IfcSurfaceStyle`, `IfcSurfaceStyleShading`, `IfcColourRgb`, `IfcStyledItem`).
+- **Constructive Solid Geometry (CSG) & Boolean Clipping (`IfcBooleanResult`)**:
+  - Full parametric plane clipping (`IFCBOOLEANCLIPPINGRESULT`, `IFCHALFSPACESOLID`, `IFCPLANE`) with exact 3D polygon mesh evaluation (`ToMesh()`).
+- **Standard Structural Steel Profiles (`IfcProfileDef`)**:
+  - Parameterized cross-sections for structural framing: `IfcIShapeProfileDef` (I-beam/H-beam), `IfcLShapeProfileDef` (angle), and `IfcUShapeProfileDef` (channel) with boundary points and solid extrusion.
+- **Topological MEP Ports & Flow Networks (`IfcDistributionPort`)**:
+  - Strongly-typed ports with `IfcFlowDirection`, `IFCRELCONNECTSPORTTOELEMENT`, `IFCRELCONNECTSPORTS`, and BFS network tracing (`TraceConnectedElements`).
+- **Multi-layer Material Systems & Profile Sets (`IfcIO.Model`)**:
+  - Composite layer assemblies (`IfcMaterialLayer`, `IfcMaterialLayerSet`, `IfcMaterialLayerSetUsage`) and structural profile sets (`IfcMaterialProfile`, `IfcMaterialProfileSet`, `IfcMaterialProfileSetUsage`) linked via `IFCRELASSOCIATESMATERIAL`.
+- **Architectural & MEP Spaces (`IfcSpace`) & BCF 2.1 Coordination**:
+  - High-level spaces, space boundaries (`IfcSpaceBoundary`), MEP systems (`IfcSystem`), and full BIM Collaboration Format 2.1 zip read/write (`IfcIO.Bcf`).
 - **Zero Dependencies**: Pure C# targeting `.NET 8` and `.NET 10`.
 
 ---

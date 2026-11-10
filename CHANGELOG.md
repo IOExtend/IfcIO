@@ -2,6 +2,36 @@
 
 All notable changes to the `IfcIO` library are documented in this file.
 
+## [0.6.0] - 2026-11-10
+
+### Major Additions & Capabilities
+- **Constructive Solid Geometry (CSG) & Boolean Clipping (`IfcBooleanResult` / `IfcBooleanClippingResult`)**:
+  - Exact 3D mesh evaluation (`ToMesh()`) via Sutherland-Hodgman polygon plane clipping without external dependencies.
+  - Planar primitives: `IfcPlane` (reference point & normal vector, signed perpendicular distance) and `IfcHalfSpaceSolid` (infinite clipping plane with `AgreementFlag`).
+  - Convenient model builder `model.AddClippedSolid(...)` for rafters, slanted roof cuts, foundation trenches, and arbitrary boolean shapes.
+  - Full ISO 10303-21 STEP physical file serialization (`IFCBOOLEANCLIPPINGRESULT`, `IFCBOOLEANRESULT`, `IFCHALFSPACESOLID`, `IFCPLANE`) and deserialization.
+- **Standard Structural Steel Profiles (`IfcProfileDef` Subtypes)**:
+  - `IfcIShapeProfileDef`: parameterized I-beam / H-beam cross-section (`OverallWidth`, `OverallDepth`, `WebThickness`, `FlangeThickness`, `FilletRadius`).
+  - `IfcLShapeProfileDef`: parameterized L-angle cross-section (`Depth`, `Width`, `Thickness`, `FilletRadius`).
+  - `IfcUShapeProfileDef`: parameterized U-channel cross-section (`Depth`, `FlangeWidth`, `WebThickness`, `FlangeThickness`, `FilletRadius`).
+  - Accurate 2D boundary polygons with 3D extrusion (`ToMesh()`) and STEP roundtrip.
+- **Topological MEP Ports & Network Connectivity (`IfcDistributionPort`)**:
+  - Strongly-typed `IfcDistributionPort` with `IfcFlowDirection` (`Source`, `Sink`, `SourceAndSink`, `NotDefined`).
+  - Port-to-element association via `IFCRELCONNECTSPORTTOELEMENT`.
+  - Port-to-port topological continuity via `IFCRELCONNECTSPORTS`.
+  - Breadth-First Search (BFS) network traversal via `IfcModel.TraceConnectedElements(...)` to navigate connected duct, pipe, and cable networks.
+  - Full STEP serialization and deserialization.
+- **Multi-layer Material Systems & Structural Profiles (`IfcIO.Model`)**:
+  - Layered composite constructions: `IfcMaterialLayer`, `IfcMaterialLayerSet`, `IfcMaterialLayerSetUsage` with reference line offset.
+  - Structural profile materials: `IfcMaterialProfile`, `IfcMaterialProfileSet`, `IfcMaterialProfileSetUsage` with cardinal point alignment.
+  - Material assignment to building elements via `IFCRELASSOCIATESMATERIAL`.
+  - Model helpers: `model.AddMaterialLayerSet(...)`, `model.AssignMaterialLayerSet(...)`, `model.AddMaterialProfileSet(...)`, `model.AssignMaterialProfileSet(...)`.
+- **Validation Engine Enhancements (`IfcValidator`)**:
+  - `IFC_CSG_OPERAND_MISSING`: verifies operands in boolean results.
+  - `IFC_PROFILE_SECTION`: verifies geometric validity constraints ($2 t_f < H$ and $t_w < B$ for I-beams; $t < B, H$ for L-angles; $2 t_f < H$ and $t_w < B$ for U-channels).
+  - `IFC_PORT_DIRECTION`: flags ports with undefined flow directions.
+  - `IFC_LAYER_THICKNESS`: ensures layer thicknesses are positive and finite.
+
 ## [0.5.0] - 2026-11-10
 
 ### Major Additions & Capabilities

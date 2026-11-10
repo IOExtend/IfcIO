@@ -183,7 +183,12 @@ def render_png(width, height, rx, block_size, base_xs, start_y, shadow_offset, l
 
 def render_canonical_icon():
     # Remap RvtIO icon directly to ensure exact 100% parity with RvtIO's glyph height, font, and bounds
-    rvt_icon_path = r'C:\Users\maxah\source\repos\mahach666\RvtIO\src\RvtIO\icon.png'
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    rvt_icon_path = os.environ.get('RVT_ICON_PATH') or os.path.abspath(os.path.join(root, '..', 'RvtIO', 'src', 'RvtIO', 'icon.png'))
+    if not os.path.exists(rvt_icon_path):
+        rvt_icon_path = os.path.abspath(os.path.join(root, '..', 'mahach666', 'RvtIO', 'src', 'RvtIO', 'icon.png'))
+    if not os.path.exists(rvt_icon_path):
+        rvt_icon_path = os.path.join(root, 'src', 'IfcIO', 'icon.png')
     im_rvt = Image.open(rvt_icon_path)
     arr = np.array(im_rvt, dtype=np.float64)
 

@@ -2,6 +2,38 @@
 
 All notable changes to the `IfcIO` library are documented in this file.
 
+## [0.10.0] - 2026-11-11
+
+### Major Additions & Capabilities
+- **4D Construction Sequencing & Temporal Simulation (`IfcWorkSchedule`, `IfcTask`, `IfcTaskTime` / `IfcIO.Model.Sequence`)**:
+  - Full support for construction work schedules (`IFCWORKSCHEDULE`), WBS hierarchies, task durations, milestones, and predecessor/successor relationships (`IFCRELSEQUENCE` with `FinishToStart`, `StartToStart`, `FinishToFinish`, `StartToFinish`).
+  - Elements assigned to construction tasks via `IFCRELASSIGNSTOPROCESS`.
+  - Temporal 4D simulation engine: query active tasks (`GetActiveTasksAt`), element simulation states (`GetElementStateAt`: `NotStarted`, `Planned`, `InProgress`, `Completed`), and overall schedule progress (`GetProgressAt`) at any given simulation date.
+  - Interactive 4D timeline simulation playback integrated into the standalone 3D HTML viewer (`IfcHtmlViewerExporter`).
+- **5D Cost Planning & CBS Budgeting (`IfcCostSchedule`, `IfcCostItem`, `IfcCostValue` / `IfcIO.Model.Cost`)**:
+  - Hierarchical Cost Breakdown Structure (CBS) supporting predefined schedule types (`Budget`, `CostPlan`, `Estimate`, `Tender`, `Actual`, `Valuation`, `Pricing`).
+  - Unit rates, quantities, and automatic cost rollups across hierarchical tree nodes (`item.TotalCost`, `cs.GetTotalCost()`).
+  - Applied monetary value breakdown components conforming to `IFCAPPLIEDVALUE`.
+  - Element assignments and physical quantity bindings via `IFCRELASSIGNSTOCONTROL`.
+  - Full STEP physical file roundtrip serialization and deserialization for IFC4 and IFC2x3.
+- **Spatial Zones (`IfcZone` / `IfcIO.Model`)**:
+  - Functional spatial zone grouping conforming to `IFCZONE` (inherits `IfcGroup`) for architectural spaces and rooms.
+  - Support for thermal, fire safety, acoustic, security, and ventilation zone classifications.
+- **Bi-directional buildingSMART BCF 2.1 Archive Container (`BcfArchive` / `IfcIO.Bcf`)**:
+  - Full in-memory or stream-based container for reading, querying, editing, and saving `.bcfzip` archives.
+  - High-level queries by element GUID (`archive.FindTopicsByElement`), status (`archive.FindTopicsByStatus`), and topic manipulation (`AddTopic`).
+  - Complete snapshot image encoding/decoding (`snapshot.png`) and viewpoint camera handling.
+- **High-Level IfcOpenShell-Compatible API Facade (`IfcApi` / `IfcIO.Api`)**:
+  - High-level, script-like API facade inspired by IfcOpenShell API conventions:
+    - `IfcApi.Sequence`: `AddWorkSchedule`, `AddTask`, `AssignProcess`, `AddSequence`.
+    - `IfcApi.Cost`: `AddCostSchedule`, `AddCostItem`, `AssignCostControl`, `AssignQuantity`.
+    - `IfcApi.Spatial`: `AddZone`, `AssignContainer`.
+    - `IfcApi.Root`: `CreateProject`, `CreateStorey`, `CreateWall`, `CreateSlab`, `CreateColumn`, `CreateBeam`.
+- **CLI Command Expansion (`IfcIO.Cli`)**:
+  - `ifcio schedule`: temporal 4D construction schedule simulation with `--sim-date <date>` and `--export-csv <file.csv>`.
+  - `ifcio cost`: 5D cost breakdown and budget reporting with `--export-csv <file.csv>`.
+  - `ifcio bcf`: inspect BCF 2.1 coordination archive topics, status, and viewpoints.
+
 ## [0.9.0] - 2026-11-11
 
 ### Major Additions & Capabilities

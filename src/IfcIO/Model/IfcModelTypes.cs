@@ -225,6 +225,34 @@ public sealed class IfcBuildingStorey
     public string? GlobalId { get; set; }
     public List<IfcElement> Elements { get; } = [];
     public List<IfcSpace> Spaces { get; } = [];
+
+    public IfcElement AddWall(string name, IfcMesh? mesh = null, IfcMaterial? material = null)
+    {
+        var wall = new IfcElement { Id = Elements.Count + 1, Name = name, IfcType = "IFCWALL", Mesh = mesh, Material = material };
+        Elements.Add(wall);
+        return wall;
+    }
+
+    public IfcElement AddSlab(string name, IfcMesh? mesh = null, IfcMaterial? material = null)
+    {
+        var slab = new IfcElement { Id = Elements.Count + 1, Name = name, IfcType = "IFCSLAB", Mesh = mesh, Material = material };
+        Elements.Add(slab);
+        return slab;
+    }
+
+    public IfcElement AddColumn(string name, IfcMesh? mesh = null, IfcMaterial? material = null)
+    {
+        var col = new IfcElement { Id = Elements.Count + 1, Name = name, IfcType = "IFCCOLUMN", Mesh = mesh, Material = material };
+        Elements.Add(col);
+        return col;
+    }
+
+    public IfcElement AddBeam(string name, IfcMesh? mesh = null, IfcMaterial? material = null)
+    {
+        var beam = new IfcElement { Id = Elements.Count + 1, Name = name, IfcType = "IFCBEAM", Mesh = mesh, Material = material };
+        Elements.Add(beam);
+        return beam;
+    }
 }
 
 /// <summary>
@@ -425,5 +453,31 @@ public sealed class IfcSystem : IfcGroup
     public IfcSystem(string name, string systemType = "HVAC") : base(name)
     {
         SystemType = systemType;
+    }
+}
+
+/// <summary>
+/// A spatial group of spaces sharing common thermal, acoustic, fire safety, or security properties.
+/// Conforms to buildingSMART standard IFCZONE.
+/// </summary>
+public sealed class IfcZone : IfcGroup
+{
+    public string? ZoneType { get; set; }
+    public List<IfcSpace> Spaces { get; } = [];
+
+    public IfcZone() { }
+
+    public IfcZone(string name, string? zoneType = null) : base(name)
+    {
+        ZoneType = zoneType;
+    }
+
+    public void AddSpace(IfcSpace space)
+    {
+        ArgumentNullException.ThrowIfNull(space);
+        if (!Spaces.Contains(space))
+        {
+            Spaces.Add(space);
+        }
     }
 }

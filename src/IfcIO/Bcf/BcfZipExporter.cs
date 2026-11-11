@@ -82,6 +82,16 @@ public static class BcfZipExporter
                 {
                     WriteViewpointXml(xml, vp);
                 }
+
+                // Write snapshot if provided
+                if (vp.SnapshotData is not null && vp.SnapshotData.Length > 0)
+                {
+                    string snapFileName = vIdx == 0 ? "snapshot.png" : $"snapshot_{vp.ViewpointGuid:D}.png";
+                    vp.SnapshotFileName = snapFileName;
+                    var snapEntry = archive.CreateEntry($"{topicFolder}/{snapFileName}", CompressionLevel.Optimal);
+                    using var snapStream = snapEntry.Open();
+                    snapStream.Write(vp.SnapshotData);
+                }
             }
         }
     }
@@ -183,6 +193,18 @@ public static class BcfZipExporter
                 }
             }
 
+            // Read snapshots
+            var snapEntry = archive.GetEntry($"{folder}/snapshot.png") ??
+                            archive.Entries.FirstOrDefault(e => e.FullName.StartsWith($"{folder}/snapshot", StringComparison.OrdinalIgnoreCase) && e.FullName.EndsWith(".png", StringComparison.OrdinalIgnoreCase));
+            if (snapEntry is not null && topic.Viewpoints.Count > 0)
+            {
+                using var snapStream = snapEntry.Open();
+                using var ms = new MemoryStream();
+                snapStream.CopyTo(ms);
+                topic.Viewpoints[0].SnapshotData = ms.ToArray();
+                topic.Viewpoints[0].SnapshotFileName = Path.GetFileName(snapEntry.FullName);
+            }
+
             result.Add(topic);
         }
 
@@ -222,6 +244,10 @@ public static class BcfZipExporter
             xml.WriteStartElement("Viewpoints");
             xml.WriteAttributeString("Guid", vp.ViewpointGuid.ToString("D"));
             xml.WriteElementString("Viewpoint", vpFileName);
+            if (!string.IsNullOrEmpty(vp.SnapshotFileName))
+            {
+                xml.WriteElementString("Snapshot", vp.SnapshotFileName);
+            }
             xml.WriteEndElement();
         }
 
@@ -285,17 +311,39 @@ public static class BcfZipExporter
             xml.WriteEndElement(); // PerspectiveCamera
         }
 
-        if (vp.SelectedElementGuids.Count > 0)
+        if (vp.SelectedElementGuids.Count > 0 || vp.HiddenElementGuids.Count > 0 || vp.VisibleElementGuids.Count > 0 || !vp.DefaultVisibility)
         {
             xml.WriteStartElement("Components");
-            xml.WriteStartElement("Selection");
-            foreach (var guid in vp.SelectedElementGuids)
+            if (!vp.DefaultVisibility || vp.HiddenElementGuids.Count > 0 || vp.VisibleElementGuids.Count > 0)
             {
-                xml.WriteStartElement("Component");
-                xml.WriteAttributeString("IfcGuid", guid);
-                xml.WriteEndElement();
+                xml.WriteStartElement("Visibility");
+                xml.WriteAttributeString("DefaultVisibility", vp.DefaultVisibility ? "true" : "false");
+                var exceptions = vp.DefaultVisibility ? vp.HiddenElementGuids : vp.VisibleElementGuids;
+                if (exceptions.Count > 0)
+                {
+                    xml.WriteStartElement("Exceptions");
+                    foreach (var guid in exceptions)
+                    {
+                        xml.WriteStartElement("Component");
+                        xml.WriteAttributeString("IfcGuid", guid);
+                        xml.WriteEndElement();
+                    }
+                    xml.WriteEndElement(); // Exceptions
+                }
+                xml.WriteEndElement(); // Visibility
             }
-            xml.WriteEndElement(); // Selection
+
+            if (vp.SelectedElementGuids.Count > 0)
+            {
+                xml.WriteStartElement("Selection");
+                foreach (var guid in vp.SelectedElementGuids)
+                {
+                    xml.WriteStartElement("Component");
+                    xml.WriteAttributeString("IfcGuid", guid);
+                    xml.WriteEndElement();
+                }
+                xml.WriteEndElement(); // Selection
+            }
             xml.WriteEndElement(); // Components
         }
 
@@ -351,7 +399,30 @@ public static class BcfZipExporter
             }
         }
 
-        foreach (var c in root.FindDescendants("Component"))
+        var vis = root.FindDescendants("Visibility").FirstOrDefault();
+        if (vis is not null)
+        {
+            string? defVis = (string?)vis.Attribute("DefaultVisibility");
+            if (bool.TryParse(defVis, out bool dv))
+            {
+                vp.DefaultVisibility = dv;
+            }
+            var ex = vis.FindChild("Exceptions");
+            if (ex is not null)
+            {
+                foreach (var c in ex.FindDescendants("Component"))
+                {
+                    string? g = (string?)c.Attribute("IfcGuid");
+                    if (!string.IsNullOrEmpty(g))
+                    {
+                        if (vp.DefaultVisibility) vp.HiddenElementGuids.Add(g);
+                        else vp.VisibleElementGuids.Add(g);
+                    }
+                }
+            }
+        }
+
+        foreach (var c in root.FindDescendants("Selection").SelectMany(s => s.FindDescendants("Component")))
         {
             string? ifcGuid = (string?)c.Attribute("IfcGuid");
             if (!string.IsNullOrEmpty(ifcGuid))

@@ -82,7 +82,23 @@ Built clean-room under the [IOExtend](https://github.com/IOExtend) organization 
   - Full revision comparison between two IFC models detecting added, deleted, and modified elements (3D geometry displacement, property set deltas, quantity variations, and storey re-assignments) conforming to `ifcdiff`. Direct export to JSON and BCF 2.1 archives.
 - **Standalone 3D WebGL HTML Viewer (`IfcHtmlViewerExporter`)**:
   - Export any IFC model to an interactive, self-contained single-file 3D HTML viewer (`.html`) with zero external scripts, CDNs, or server dependencies.
-  - Includes orbit camera controls, live multi-axis section clipping planes (Cut X, Cut Y, Cut Z), spatial tree navigation, element property inspector, interactive 2-point 3D measurement tool, and 2D canvas overlay drawing of architectural grid axes and bubble labels.
+  - Includes orbit camera controls, live multi-axis section clipping planes (Cut X, Cut Y, Cut Z), spatial tree navigation, element property inspector, interactive 2-point 3D measurement tool, 2D canvas overlay drawing of architectural grid axes and bubble labels, and interactive 4D timeline simulation playback.
+- **4D Construction Sequencing & Temporal Simulation (`IfcWorkSchedule`, `IfcTask`, `IfcTaskTime`, `IFCRELSEQUENCE`)**:
+  - Full support for construction work schedules, WBS hierarchies, task durations, milestones, and predecessor/successor relationships (`FinishToStart`, `StartToStart`, `FinishToFinish`, `StartToFinish`).
+  - Temporal 4D simulation engine: query active tasks, completed tasks, overall progress ratio, and element states (`Planned`, `InProgress`, `Completed`, `NotStarted`) at any given simulation date.
+  - Interactive 4D timeline playback in the standalone HTML viewer (`ifcio view`).
+- **5D Cost Planning & Budgeting (`IfcCostSchedule`, `IfcCostItem`, `IfcCostValue`, `IFCAPPLIEDVALUE`)**:
+  - Hierarchical Cost Breakdown Structure (CBS), unit rates, quantities, and automatic cost rollup across tree nodes.
+  - Elements and physical quantities linked to cost items via `IFCRELASSIGNSTOCONTROL`.
+  - CLI command `ifcio cost` with CSV export.
+- **Spatial Zones (`IfcZone`, `IFCZONE`)**:
+  - Grouping architectural spaces and rooms into thermal, fire safety, acoustic, security, and ventilation zones.
+- **Bi-directional BCF 2.1 Archive Container (`BcfArchive`)**:
+  - Full in-memory or stream-based container for reading, inspecting, modifying, and writing buildingSMART BCF 2.1 zip archives (`.bcfzip`).
+  - High-level queries by element GUID (`FindTopicsByElement`), status (`FindTopicsByStatus`), and snapshot image attachments.
+  - CLI command `ifcio bcf` for inspection and topic listing.
+- **High-Level IfcOpenShell-Compatible API Facade (`IfcApi`)**:
+  - Pythonic, clean API: `IfcApi.Sequence`, `IfcApi.Cost`, `IfcApi.Spatial`, and `IfcApi.Root` for rapid automation.
 - **Zero Dependencies**: Pure C# targeting `.NET 8` and `.NET 10`.
 
 ---
@@ -470,6 +486,69 @@ model.SaveHtmlViewer("BuildingModel.html", new IfcHtmlViewerOptions
 });
 ```
 
+### 4D Construction Sequencing & Simulation
+
+```csharp
+using IfcIO.Model.Sequence;
+
+// Create 4D schedule with tasks, WBS, and element assignments
+var schedule = model.AddWorkSchedule("Tower Schedule");
+var task = schedule.AddTask("Construct Walls", "WBS-1.1", new DateTime(2026, 2, 1), new DateTime(2026, 3, 1));
+task.AssignElement(wall);
+
+// Query temporal state during construction
+var activeTasks = schedule.GetActiveTasksAt(new DateTime(2026, 2, 15));
+var state = schedule.GetElementStateAt(wall, new DateTime(2026, 2, 15)); // => IfcElementSimulationState.InProgress
+```
+
+### 5D Cost Planning & CBS Budgeting
+
+```csharp
+using IfcIO.Model.Cost;
+
+// Create 5D cost schedule with CBS items, unit rates, and quantities
+var budget = model.AddCostSchedule("Master Budget", "USD", IfcCostScheduleType.Budget);
+var masonryItem = budget.AddCostItem("Wall Masonry", "04.20.00", unitRate: 150.0, quantity: 200.0, unitBasis: "m2");
+masonryItem.AssignElement(wall);
+
+Console.WriteLine($"Total Item Cost: {masonryItem.TotalCost} USD"); // => 30000 USD
+Console.WriteLine($"Grand Budget: {budget.GetTotalCost()} USD");
+```
+
+### High-Level IfcOpenShell-Compatible API Facade (`IfcApi`)
+
+```csharp
+using IfcIO.Api;
+
+var model = IfcApi.Root.CreateProject("Commercial Office", schema: IfcIO.Schema.IfcSchema.Ifc4);
+var storey = IfcApi.Root.CreateStorey(model, "Ground Floor", 0.0);
+var wall = IfcApi.Root.CreateWall(model, storey, "Exterior Wall");
+
+// High-level 4D and 5D workflows
+var ws = IfcApi.Sequence.AddWorkSchedule(model, "Main Schedule");
+var task = IfcApi.Sequence.AddTask(model, ws, "Wall Framing", new DateTime(2026, 1, 10), new DateTime(2026, 2, 10));
+IfcApi.Sequence.AssignProcess(task, wall);
+
+var cs = IfcApi.Cost.AddCostSchedule(model, "Base Budget");
+var ci = IfcApi.Cost.AddCostItem(cs, "Framing Labor", unitRate: 75.0, quantity: 120.0);
+IfcApi.Cost.AssignCostControl(ci, wall);
+```
+
+### buildingSMART BCF 2.1 Archive Container (`BcfArchive`)
+
+```csharp
+using IfcIO.Bcf;
+
+// Read, query, and modify BCF zip archives directly
+using var bcf = BcfArchive.Open("Issues.bcfzip");
+var activeTopics = bcf.FindTopicsByStatus("Active");
+var wallIssues = bcf.FindTopicsByElement(wall.GlobalId);
+
+// Add topic and export updated archive
+bcf.AddTopic("Verify concrete cover thickness", "Architectural Review", priority: "High");
+bcf.Save("Issues_Updated.bcfzip");
+```
+
 ---
 
 ## Global CLI Tool (`ifcio`)
@@ -485,6 +564,15 @@ dotnet tool install --global IfcIO.Cli
 ```sh
 # Inspect model metadata, storeys, spaces, systems, and element distribution
 ifcio info Building.ifc --report --spaces --systems --export-grids Grids.xml
+
+# 4D construction schedule temporal simulation and CSV export
+ifcio schedule Building.ifc --sim-date 2026-06-01 --export-csv ScheduleReport.csv
+
+# 5D cost breakdown and budget reporting
+ifcio cost Building.ifc --export-csv CostBreakdown.csv
+
+# Inspect BCF 2.1 archive topics and viewpoints
+ifcio bcf Issues.bcfzip
 
 # Query elements matching IfcOpenShell-style selector
 ifcio query Building.ifc "IfcWall[LoadBearing=TRUE]"

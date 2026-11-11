@@ -81,6 +81,10 @@ public sealed class StepWriter
 
     public const string Null = "$";
 
+    public static string Number(int v) => v.ToString(CultureInfo.InvariantCulture);
+
+    public static string Number(int? v) => v.HasValue ? v.Value.ToString(CultureInfo.InvariantCulture) : "$";
+
     public static string Str(string? s) => s is null ? "$" : $"'{Escape(s)}'";
 
     public static string Enum(string v) => $".{v}.";

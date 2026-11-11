@@ -43,6 +43,9 @@ public static class Program
                 "import-csv" => ExecuteImportCsv(cmdArgs),
                 "clash" => ExecuteClash(cmdArgs),
                 "diff" => ExecuteDiff(cmdArgs),
+                "schedule" or "4d" => ExecuteSchedule(cmdArgs),
+                "cost" or "5d" => ExecuteCost(cmdArgs),
+                "bcf" => ExecuteBcf(cmdArgs),
                 "view" or "html" => ExecuteView(cmdArgs),
                 _ when File.Exists(args[0]) => ExecuteDefault(args),
                 _ => PrintUnknownCommand(command)
@@ -76,6 +79,9 @@ Commands:
   import-csv <file> <in.csv> -o <out.ifc> Update property sets from a CSV spreadsheet
   clash <fileA> [fileB] Run 3D geometric clash detection (cross-model or self-clash)
   diff <baseline> <rev> Compare two IFC model revisions (added, deleted, modified)
+  schedule <file.ifc>   Inspect 4D construction schedule, simulation progress, and export CSV
+  cost <file.ifc>       Inspect 5D cost schedule, budgets, takeoffs, and export CSV
+  bcf <file.bcfzip>     Inspect buildingSMART BCF 2.1 zip archive topics, viewpoints, comments
   view <file.ifc> [-o out.html] Export standalone 3D WebGL HTML viewer (.html)
 
 Clash & Diff Options:
@@ -1102,6 +1108,210 @@ Examples:
         Console.ForegroundColor = ConsoleColor.Green;
         Console.WriteLine($"3D WebGL HTML viewer exported to '{outPath}' in {sw.ElapsedMilliseconds} ms.");
         Console.ResetColor();
+        return 0;
+    }
+
+    private static int ExecuteSchedule(string[] args)
+    {
+        if (args.Length == 0)
+        {
+            Console.Error.WriteLine("Error: Missing IFC file path. Usage: ifcio schedule <file.ifc> [--sim-date <YYYY-MM-DD>] [--export-csv <out.csv>]");
+            return 1;
+        }
+
+        string inputPath = args[0];
+        if (!File.Exists(inputPath))
+        {
+            Console.Error.WriteLine($"Error: File '{inputPath}' not found.");
+            return 1;
+        }
+
+        var model = IfcModel.Open(inputPath);
+        if (model.WorkSchedules.Count == 0)
+        {
+            Console.WriteLine($"Model '{Path.GetFileName(inputPath)}' contains no 4D construction work schedules.");
+            return 0;
+        }
+
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.WriteLine($"4D Construction Work Schedules: {model.WorkSchedules.Count} schedule(s)");
+        Console.ResetColor();
+
+        string? simDateStr = GetOptionValue(args, "--sim-date");
+        DateTime? simDate = null;
+        if (!string.IsNullOrEmpty(simDateStr) && DateTime.TryParse(simDateStr, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var parsedDate))
+        {
+            simDate = parsedDate;
+        }
+
+        foreach (var ws in model.WorkSchedules)
+        {
+            Console.WriteLine();
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine($"  Schedule: {ws.Name} (GlobalId: {ws.GlobalId})");
+            Console.ResetColor();
+            if (ws.StartTime.HasValue || ws.FinishTime.HasValue)
+            {
+                Console.WriteLine($"  Planned: {ws.StartTime:yyyy-MM-dd} -> {ws.FinishTime:yyyy-MM-dd}");
+            }
+            Console.WriteLine($"  Total tasks: {ws.AllTasks.Count()}");
+
+            if (simDate.HasValue)
+            {
+                double prog = ws.GetProgressAt(simDate.Value);
+                var active = ws.GetActiveTasksAt(simDate.Value);
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine($"  Simulation Progress at {simDate.Value:yyyy-MM-dd}: {prog:F1}% (Active tasks: {active.Count})");
+                Console.ResetColor();
+                foreach (var at in active)
+                {
+                    Console.WriteLine($"    * [{at.Identification ?? "WBS"}] {at.Name} ({at.TaskType}) Elements: {at.AssignedElements.Count}");
+                }
+            }
+            else
+            {
+                foreach (var task in ws.AllTasks)
+                {
+                    var start = task.Time?.ActualStartDate ?? task.Time?.PlannedStartDate;
+                    var finish = task.Time?.ActualFinishDate ?? task.Time?.PlannedFinishDate;
+                    string dates = (start.HasValue && finish.HasValue) ? $"[{start:yyyy-MM-dd} -> {finish:yyyy-MM-dd}]" : "";
+                    Console.WriteLine($"    - [{task.Identification ?? "Task"}] {task.Name,-30} {dates,-26} Elements: {task.AssignedElements.Count}");
+                }
+            }
+        }
+
+        string? exportCsvPath = GetOptionValue(args, "--export-csv");
+        if (!string.IsNullOrEmpty(exportCsvPath))
+        {
+            using var writer = new StreamWriter(exportCsvPath, false, System.Text.Encoding.UTF8);
+            writer.WriteLine("Schedule;TaskName;WBS;TaskType;StartDate;FinishDate;AssignedElements");
+            foreach (var ws in model.WorkSchedules)
+            {
+                foreach (var t in ws.AllTasks)
+                {
+                    var start = t.Time?.ActualStartDate ?? t.Time?.PlannedStartDate;
+                    var finish = t.Time?.ActualFinishDate ?? t.Time?.PlannedFinishDate;
+                    writer.WriteLine($"{ws.Name};{t.Name};{t.Identification};{t.TaskType};{start:yyyy-MM-dd};{finish:yyyy-MM-dd};{t.AssignedElements.Count}");
+                }
+            }
+            Console.WriteLine($"Schedule exported to CSV: '{exportCsvPath}'");
+        }
+
+        return 0;
+    }
+
+    private static int ExecuteCost(string[] args)
+    {
+        if (args.Length == 0)
+        {
+            Console.Error.WriteLine("Error: Missing IFC file path. Usage: ifcio cost <file.ifc> [--export-csv <out.csv>]");
+            return 1;
+        }
+
+        string inputPath = args[0];
+        if (!File.Exists(inputPath))
+        {
+            Console.Error.WriteLine($"Error: File '{inputPath}' not found.");
+            return 1;
+        }
+
+        var model = IfcModel.Open(inputPath);
+        if (model.CostSchedules.Count == 0)
+        {
+            Console.WriteLine($"Model '{Path.GetFileName(inputPath)}' contains no 5D cost schedules.");
+            return 0;
+        }
+
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.WriteLine($"5D Cost Schedules & Budgets: {model.CostSchedules.Count} schedule(s)");
+        Console.WriteLine($"Grand Total Cost: {model.CalculateTotalCost():N2}");
+        Console.ResetColor();
+
+        foreach (var cs in model.CostSchedules)
+        {
+            Console.WriteLine();
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine($"  Schedule: {cs.Name} ({cs.ScheduleType}) - Currency: {cs.Currency}");
+            Console.WriteLine($"  Total Cost: {cs.GetTotalCost():N2} {cs.Currency}");
+            Console.ResetColor();
+
+            foreach (var item in cs.AllCostItems)
+            {
+                string rateStr = item.UnitRate.HasValue ? $"Rate: {item.UnitRate.Value:N2}/{item.UnitBasis ?? "unit"}" : "";
+                string qtyStr = item.Quantity.HasValue ? $"Qty: {item.Quantity.Value:N2}" : "";
+                Console.WriteLine($"    - [{item.CostCode ?? "CBS"}] {item.Name,-28} Cost: {item.TotalCost,12:N2} {cs.Currency} | {rateStr} {qtyStr} | Elements: {item.AssignedElements.Count}");
+            }
+        }
+
+        string? exportCsvPath = GetOptionValue(args, "--export-csv");
+        if (!string.IsNullOrEmpty(exportCsvPath))
+        {
+            using var writer = new StreamWriter(exportCsvPath, false, System.Text.Encoding.UTF8);
+            writer.WriteLine("Schedule;CostCode;Name;UnitRate;Quantity;UnitBasis;TotalCost;Currency;AssignedElements");
+            foreach (var cs in model.CostSchedules)
+            {
+                foreach (var item in cs.AllCostItems)
+                {
+                    writer.WriteLine($"{cs.Name};{item.CostCode};{item.Name};{item.UnitRate?.ToString(CultureInfo.InvariantCulture)};{item.Quantity?.ToString(CultureInfo.InvariantCulture)};{item.UnitBasis};{item.TotalCost.ToString(CultureInfo.InvariantCulture)};{cs.Currency};{item.AssignedElements.Count}");
+                }
+            }
+            Console.WriteLine($"Cost schedule exported to CSV: '{exportCsvPath}'");
+        }
+
+        return 0;
+    }
+
+    private static int ExecuteBcf(string[] args)
+    {
+        if (args.Length == 0)
+        {
+            Console.Error.WriteLine("Error: Missing BCF command. Usage: ifcio bcf <read|info> <path.bcfzip>");
+            return 1;
+        }
+
+        string subCmd = args[0].ToLowerInvariant();
+        string bcfPath = (subCmd is "read" or "info" && args.Length > 1) ? args[1] : args[0];
+
+        if (!File.Exists(bcfPath))
+        {
+            Console.Error.WriteLine($"Error: BCF archive '{bcfPath}' not found.");
+            return 1;
+        }
+
+        var archive = Bcf.BcfArchive.Open(bcfPath);
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.WriteLine("================================================================================");
+        Console.WriteLine($" buildingSMART BCF Archive: {Path.GetFileName(bcfPath)}");
+        Console.WriteLine("================================================================================");
+        Console.ResetColor();
+
+        Console.WriteLine($"  Total Topics: {archive.Topics.Count}");
+        foreach (var topic in archive.Topics)
+        {
+            Console.WriteLine();
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine($"  Topic: [{topic.TopicStatus}] {topic.Title} ({topic.TopicType})");
+            Console.ResetColor();
+            Console.WriteLine($"    Guid:        {topic.TopicGuid}");
+            Console.WriteLine($"    Priority:    {topic.Priority}");
+            Console.WriteLine($"    Author:      {topic.CreationAuthor} on {topic.CreationDate:yyyy-MM-dd HH:mm}");
+            if (!string.IsNullOrEmpty(topic.AssignedTo))
+            {
+                Console.WriteLine($"    Assigned To: {topic.AssignedTo}");
+            }
+            if (!string.IsNullOrEmpty(topic.Description))
+            {
+                Console.WriteLine($"    Description: {topic.Description}");
+            }
+            Console.WriteLine($"    Viewpoints:  {topic.Viewpoints.Count}");
+            Console.WriteLine($"    Comments:    {topic.Comments.Count}");
+
+            foreach (var comment in topic.Comments)
+            {
+                Console.WriteLine($"      * [{comment.Date:yyyy-MM-dd HH:mm}] {comment.Author}: {comment.Comment}");
+            }
+        }
+
         return 0;
     }
 }

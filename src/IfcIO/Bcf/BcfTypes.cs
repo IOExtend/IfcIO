@@ -23,8 +23,12 @@ public sealed class BcfViewpoint
     public Geometry.IfcVector3? CameraDirection { get; set; }
     public Geometry.IfcVector3? CameraUpVector { get; set; }
     public double? FieldOfView { get; set; }
+    public string? SnapshotFileName { get; set; }
+    public byte[]? SnapshotData { get; set; }
+    public bool DefaultVisibility { get; set; } = true;
     public List<string> SelectedElementGuids { get; } = [];
     public List<string> VisibleElementGuids { get; } = [];
+    public List<string> HiddenElementGuids { get; } = [];
 }
 
 /// <summary>

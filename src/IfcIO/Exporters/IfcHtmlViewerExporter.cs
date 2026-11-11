@@ -18,6 +18,7 @@ public sealed class IfcHtmlViewerOptions
     public bool IncludeSectioning { get; set; } = true;
     public bool IncludeMeasure { get; set; } = true;
     public bool IncludeGrids { get; set; } = true;
+    public bool IncludeTimeLiner { get; set; } = true;
     public Grids.IfcGridSystem? GridSystem { get; set; }
     public int MaxMeshVertices { get; set; } = 500000;
 }
@@ -1030,6 +1031,39 @@ canvas#overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%;
                 writer.WriteNumberValue(axis.End.X);
                 writer.WriteNumberValue(axis.End.Y);
                 writer.WriteNumberValue(axis.End.Z);
+                writer.WriteEndArray();
+                writer.WriteEndObject();
+            }
+            writer.WriteEndArray();
+        }
+
+        // 4D Work Schedules
+        if (options.IncludeTimeLiner && model.WorkSchedules.Count > 0)
+        {
+            writer.WriteStartArray("workSchedules");
+            foreach (var ws in model.WorkSchedules)
+            {
+                writer.WriteStartObject();
+                writer.WriteString("name", ws.Name);
+                writer.WriteStartArray("tasks");
+                foreach (var task in ws.AllTasks)
+                {
+                    writer.WriteStartObject();
+                    writer.WriteString("name", task.Name);
+                    if (!string.IsNullOrEmpty(task.Identification)) writer.WriteString("wbs", task.Identification);
+                    writer.WriteString("type", task.TaskType.ToString());
+                    var start = task.Time?.ActualStartDate ?? task.Time?.PlannedStartDate;
+                    var finish = task.Time?.ActualFinishDate ?? task.Time?.PlannedFinishDate;
+                    if (start.HasValue) writer.WriteString("start", start.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
+                    if (finish.HasValue) writer.WriteString("finish", finish.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
+                    writer.WriteStartArray("elementIds");
+                    foreach (var el in task.AssignedElements)
+                    {
+                        writer.WriteNumberValue(el.Id);
+                    }
+                    writer.WriteEndArray();
+                    writer.WriteEndObject();
+                }
                 writer.WriteEndArray();
                 writer.WriteEndObject();
             }

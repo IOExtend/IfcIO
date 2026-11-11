@@ -39,6 +39,9 @@ public sealed class IfcModel
     public List<IfcTypeProduct> TypeProducts { get; } = [];
     public List<IfcGroup> Groups { get; } = [];
     public List<IfcSystem> Systems { get; } = [];
+    public List<IfcZone> Zones { get; } = [];
+    public List<Model.Sequence.IfcWorkSchedule> WorkSchedules { get; } = [];
+    public List<Model.Cost.IfcCostSchedule> CostSchedules { get; } = [];
 
     /// <summary>Spatial grid system (axes and levels) associated with the IFC model.</summary>
     public Grids.IfcGridSystem? GridSystem { get; set; }
@@ -355,6 +358,74 @@ public sealed class IfcModel
         }
         Groups.Add(group);
         return group;
+    }
+
+    /// <summary>
+    /// Creates and registers a spatial zone grouping spaces sharing thermal, fire, or acoustic classifications.
+    /// Conforms to buildingSMART standard IFCZONE.
+    /// </summary>
+    public IfcZone AddZone(string name, string? zoneType = null, IEnumerable<IfcSpace>? spaces = null)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        var zone = new IfcZone(name, zoneType);
+        if (spaces is not null)
+        {
+            foreach (var s in spaces) zone.AddSpace(s);
+        }
+        Zones.Add(zone);
+        return zone;
+    }
+
+    /// <summary>
+    /// Creates and registers a 4D construction work schedule.
+    /// Conforms to buildingSMART standard IFCWORKSCHEDULE.
+    /// </summary>
+    public Model.Sequence.IfcWorkSchedule AddWorkSchedule(string name, string? description = null)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        var schedule = new Model.Sequence.IfcWorkSchedule(name, description);
+        WorkSchedules.Add(schedule);
+        return schedule;
+    }
+
+    /// <summary>
+    /// Creates and registers a 5D cost schedule / budget plan.
+    /// Conforms to buildingSMART standard IFCCOSTSCHEDULE.
+    /// </summary>
+    public Model.Cost.IfcCostSchedule AddCostSchedule(
+        string name,
+        string currency = "USD",
+        Model.Cost.IfcCostScheduleType type = Model.Cost.IfcCostScheduleType.CostPlan)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        var schedule = new Model.Cost.IfcCostSchedule(name, currency, type);
+        CostSchedules.Add(schedule);
+        return schedule;
+    }
+
+    /// <summary>Calculates the grand total cost across all cost schedules in the model.</summary>
+    public double CalculateTotalCost() => CostSchedules.Sum(s => s.GetTotalCost());
+
+    /// <summary>Gets the 4D construction simulation state of an element at the specified date using the active work schedule.</summary>
+    public Model.Sequence.IfcElementSimulationState GetElementSimulationStateAt(IfcElement element, DateTime date)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        if (WorkSchedules.Count == 0) return Model.Sequence.IfcElementSimulationState.Constructed;
+        return WorkSchedules[0].GetElementStateAt(element, date);
+    }
+
+    /// <summary>Gets the overall 4D construction schedule progress (0.0 to 100.0) at the specified date.</summary>
+    public double GetSimulationProgressAt(DateTime date)
+    {
+        if (WorkSchedules.Count == 0) return 100.0;
+        return WorkSchedules[0].GetProgressAt(date);
+    }
+
+    /// <summary>Imports a BCF 2.1 archive (.bcfzip) file from disk.</summary>
+    public static List<Bcf.BcfTopic> ImportBcf(string path)
+    {
+        ArgumentNullException.ThrowIfNull(path);
+        return Bcf.BcfArchive.Open(path).Topics;
     }
 
     /// <summary>
@@ -1025,6 +1096,233 @@ public sealed class IfcModel
             }
         }
 
+        // Zones (IFCZONE)
+        foreach (var zone in Zones)
+        {
+            string zoneGuid = zone.GlobalId ?? IfcGuid.NewGuid();
+            int zoneId = w.Add("IFCZONE",
+                $"{StepWriter.Str(zoneGuid)},{StepWriter.Ref(ownerHistoryId)},{StepWriter.Str(zone.Name)},{StepWriter.Str(zone.Description)},{StepWriter.Str(zone.ZoneType)}");
+
+            var spaceMemberIds = new List<int>();
+            foreach (var space in zone.Spaces)
+            {
+                if (elementEntityMap.TryGetValue(space, out int sId))
+                {
+                    spaceMemberIds.Add(sId);
+                }
+            }
+
+            if (spaceMemberIds.Count > 0)
+            {
+                w.Add("IFCRELASSIGNSTOGROUP",
+                    $"{StepWriter.Str(IfcGuid.NewGuid())},{StepWriter.Ref(ownerHistoryId)},$,$,{StepWriter.List(spaceMemberIds.Select(StepWriter.Ref))},$,{StepWriter.Ref(zoneId)}");
+            }
+        }
+
+        // 4D Construction Work Schedules (IFCWORKSCHEDULE, IFCTASK, IFCTASKTIME, IFCRELASSIGNSTOPROCESS, IFCRELSEQUENCE)
+        var taskEntityMap = new Dictionary<Model.Sequence.IfcTask, int>();
+        foreach (var ws in WorkSchedules)
+        {
+            string wsGuid = ws.GlobalId ?? IfcGuid.NewGuid();
+            string wsStartStr = ws.StartTime.HasValue ? StepWriter.Str(ws.StartTime.Value.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture)) : "$";
+            string wsFinStr = ws.FinishTime.HasValue ? StepWriter.Str(ws.FinishTime.Value.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture)) : "$";
+            int wsId = (Schema == IfcSchema.Ifc4)
+                ? w.Add("IFCWORKSCHEDULE", $"{StepWriter.Str(wsGuid)},{StepWriter.Ref(ownerHistoryId)},{StepWriter.Str(ws.Name)},{StepWriter.Str(ws.Description)},$,{StepWriter.Str(ws.CreationDate.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture))},$,$,$,$,{wsStartStr},{wsFinStr}")
+                : w.Add("IFCWORKSCHEDULE", $"{StepWriter.Str(wsGuid)},{StepWriter.Ref(ownerHistoryId)},{StepWriter.Str(ws.Name)},{StepWriter.Str(ws.Description)},$,$,{StepWriter.Str(ws.CreationDate.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture))},$,$,$,{wsStartStr},{wsFinStr}");
+
+            var scheduleTaskIds = new List<int>();
+            foreach (var task in ws.AllTasks)
+            {
+                string tGuid = task.GlobalId ?? IfcGuid.NewGuid();
+                string tTypeStr = $".{task.TaskType.ToString().ToUpperInvariant()}.";
+                bool isMilestone = task.Time?.IsMilestone == true;
+                string isMileStr = isMilestone ? ".T." : ".F.";
+
+                int? timeId = null;
+                if (task.Time is not null)
+                {
+                    string pStart = task.Time.PlannedStartDate.HasValue ? StepWriter.Str(task.Time.PlannedStartDate.Value.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture)) : "$";
+                    string pFin = task.Time.PlannedFinishDate.HasValue ? StepWriter.Str(task.Time.PlannedFinishDate.Value.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture)) : "$";
+                    string aStart = task.Time.ActualStartDate.HasValue ? StepWriter.Str(task.Time.ActualStartDate.Value.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture)) : "$";
+                    string aFin = task.Time.ActualFinishDate.HasValue ? StepWriter.Str(task.Time.ActualFinishDate.Value.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture)) : "$";
+                    string compStr = task.Time.Completion.HasValue ? StepWriter.Real(task.Time.Completion.Value) : "$";
+
+                    if (Schema == IfcSchema.Ifc4)
+                    {
+                        timeId = w.Add("IFCTASKTIME",
+                            $"$,$,.NOTDEFINED.,$,$,$,$,$,$,$,{pStart},{pFin},{aStart},{aFin},{compStr},$");
+                    }
+                    else
+                    {
+                        timeId = w.Add("IFCSCHEDULETIMECONTROL",
+                            $"$,$,$,$,$,$,$,$,$,$,{aStart},{aFin},{pStart},{pFin},{compStr},$");
+                    }
+                }
+
+                string timeRef = timeId.HasValue ? StepWriter.Ref(timeId.Value) : "$";
+                string prioStr = task.Priority.HasValue ? StepWriter.Number(task.Priority.Value) : "$";
+                int taskId = (Schema == IfcSchema.Ifc4)
+                    ? w.Add("IFCTASK", $"{StepWriter.Str(tGuid)},{StepWriter.Ref(ownerHistoryId)},{StepWriter.Str(task.Name)},{StepWriter.Str(task.Description)},$,{StepWriter.Str(task.Identification)},{StepWriter.Str(task.Status)},$,{isMileStr},{prioStr},{timeRef},{tTypeStr}")
+                    : w.Add("IFCTASK", $"{StepWriter.Str(tGuid)},{StepWriter.Ref(ownerHistoryId)},{StepWriter.Str(task.Name)},{StepWriter.Str(task.Description)},$,{StepWriter.Str(task.Identification)},{StepWriter.Str(task.Status)},$,{isMileStr},{prioStr}");
+
+                taskEntityMap[task] = taskId;
+                scheduleTaskIds.Add(taskId);
+
+                // Assign elements via IFCRELASSIGNSTOPROCESS
+                var assignedElemIds = new List<int>();
+                foreach (var el in task.AssignedElements)
+                {
+                    if (elementEntityMap.TryGetValue(el, out int elId))
+                    {
+                        assignedElemIds.Add(elId);
+                    }
+                }
+                if (assignedElemIds.Count > 0)
+                {
+                    w.Add("IFCRELASSIGNSTOPROCESS",
+                        $"{StepWriter.Str(IfcGuid.NewGuid())},{StepWriter.Ref(ownerHistoryId)},$,$,{StepWriter.List(assignedElemIds.Select(StepWriter.Ref))},$,{StepWriter.Ref(taskId)},$");
+                }
+            }
+
+            if (scheduleTaskIds.Count > 0)
+            {
+                w.Add("IFCRELASSIGNSTOCONTROL",
+                    $"{StepWriter.Str(IfcGuid.NewGuid())},{StepWriter.Ref(ownerHistoryId)},$,$,{StepWriter.List(scheduleTaskIds.Select(StepWriter.Ref))},$,{StepWriter.Ref(wsId)}");
+            }
+        }
+
+        // Sequence relationships (IFCRELSEQUENCE)
+        foreach (var ws in WorkSchedules)
+        {
+            foreach (var task in ws.AllTasks)
+            {
+                if (!taskEntityMap.TryGetValue(task, out int relProcId)) continue;
+
+                foreach (var succ in task.Successors)
+                {
+                    if (taskEntityMap.TryGetValue(succ.RelatedProcess, out int succId))
+                    {
+                        string seqEnum = succ.SequenceType switch
+                        {
+                            Model.Sequence.IfcSequenceType.StartToStart => ".START_START.",
+                            Model.Sequence.IfcSequenceType.StartToFinish => ".START_FINISH.",
+                            Model.Sequence.IfcSequenceType.FinishToFinish => ".FINISH_FINISH.",
+                            _ => ".FINISH_START."
+                        };
+                        w.Add("IFCRELSEQUENCE",
+                            $"{StepWriter.Str(IfcGuid.NewGuid())},{StepWriter.Ref(ownerHistoryId)},{StepWriter.Str(succ.Description)},$,{StepWriter.Ref(relProcId)},{StepWriter.Ref(succId)},$,{seqEnum}");
+                    }
+                }
+            }
+        }
+
+        // 5D Cost Schedules & Cost Items (IFCCOSTSCHEDULE, IFCCOSTITEM, IFCAPPLIEDVALUE, IFCRELASSIGNSTOCONTROL, IFCRELNESTING)
+        foreach (var cs in CostSchedules)
+        {
+            string csGuid = cs.GlobalId ?? IfcGuid.NewGuid();
+            string csTypeEnum = $".{cs.ScheduleType.ToString().ToUpperInvariant()}.";
+            int csId = (Schema == IfcSchema.Ifc4)
+                ? w.Add("IFCCOSTSCHEDULE", $"{StepWriter.Str(csGuid)},{StepWriter.Ref(ownerHistoryId)},{StepWriter.Str(cs.Name)},{StepWriter.Str(cs.Description)},{StepWriter.Str(cs.Currency)},$,$,$,{StepWriter.Str(cs.Status)},$,{StepWriter.Str(cs.UpdateDate.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture))},$,{csTypeEnum}")
+                : w.Add("IFCCOSTSCHEDULE", $"{StepWriter.Str(csGuid)},{StepWriter.Ref(ownerHistoryId)},{StepWriter.Str(cs.Name)},{StepWriter.Str(cs.Description)},{StepWriter.Str(cs.Currency)},$,$,$,{StepWriter.Str(cs.Status)},$,{StepWriter.Str(cs.UpdateDate.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture))},$,{csTypeEnum}");
+
+            var csItemIds = new List<int>();
+            var itemEntityMap = new Dictionary<Model.Cost.IfcCostItem, int>();
+
+            foreach (var item in cs.AllCostItems)
+            {
+                string ciGuid = item.GlobalId ?? IfcGuid.NewGuid();
+
+                // Cost values (IFCAPPLIEDVALUE)
+                var appliedValIds = new List<int>();
+                if (item.CostValues.Count > 0)
+                {
+                    foreach (var cv in item.CostValues)
+                    {
+                        int avId = w.Add("IFCAPPLIEDVALUE",
+                            $"{StepWriter.Str(cv.Name)},$,IFCMONETARYMEASURE({StepWriter.Real(cv.Amount)}),$,$,$,{StepWriter.Str(cv.Category ?? cv.Currency)},$,$,$");
+                        appliedValIds.Add(avId);
+                    }
+                }
+                if (item.UnitRate.HasValue)
+                {
+                    int avId = w.Add("IFCAPPLIEDVALUE",
+                        $"{StepWriter.Str("UnitRate")},{StepWriter.Str(item.UnitBasis)},IFCMONETARYMEASURE({StepWriter.Real(item.UnitRate.Value)}),$,$,$,'UnitRate',$,$,$");
+                    appliedValIds.Add(avId);
+                }
+
+                // Quantities (IFCQUANTITY*)
+                var qtyValIds = new List<int>();
+                if (item.Quantity.HasValue)
+                {
+                    string qtyType = item.UnitBasis?.ToLowerInvariant() switch
+                    {
+                        "m2" or "sqm" => "IFCQUANTITYAREA",
+                        "m3" or "cum" => "IFCQUANTITYVOLUME",
+                        "m" or "lm" => "IFCQUANTITYLENGTH",
+                        _ => "IFCQUANTITYCOUNT"
+                    };
+                    int qId = w.Add(qtyType, $"{StepWriter.Str("Quantity")},{StepWriter.Str(item.UnitBasis)},$,{StepWriter.Real(item.Quantity.Value)},$");
+                    qtyValIds.Add(qId);
+                }
+
+                string costValuesArg = appliedValIds.Count > 0 ? StepWriter.List(appliedValIds.Select(StepWriter.Ref)) : "$";
+                string quantitiesArg = qtyValIds.Count > 0 ? StepWriter.List(qtyValIds.Select(StepWriter.Ref)) : "$";
+
+                int ciId = (Schema == IfcSchema.Ifc4)
+                    ? w.Add("IFCCOSTITEM", $"{StepWriter.Str(ciGuid)},{StepWriter.Ref(ownerHistoryId)},{StepWriter.Str(item.Name)},{StepWriter.Str(item.Description)},$,{StepWriter.Str(item.CostCode)},{costValuesArg},{quantitiesArg}")
+                    : w.Add("IFCCOSTITEM", $"{StepWriter.Str(ciGuid)},{StepWriter.Ref(ownerHistoryId)},{StepWriter.Str(item.Name)},{StepWriter.Str(item.Description)},$,{StepWriter.Str(item.CostCode)}");
+
+                itemEntityMap[item] = ciId;
+
+                if (cs.RootCostItems.Contains(item))
+                {
+                    csItemIds.Add(ciId);
+                }
+
+                if (Schema == IfcSchema.Ifc2x3 && (appliedValIds.Count > 0 || qtyValIds.Count > 0))
+                {
+                    var allValRefs = appliedValIds.Concat(qtyValIds).ToList();
+                    w.Add("IFCRELASSIGNSTOCONTROL",
+                        $"{StepWriter.Str(IfcGuid.NewGuid())},{StepWriter.Ref(ownerHistoryId)},$,$,{StepWriter.List(allValRefs.Select(StepWriter.Ref))},$,{StepWriter.Ref(ciId)}");
+                }
+
+                // Assigned elements
+                var assignedElemIds = new List<int>();
+                foreach (var el in item.AssignedElements)
+                {
+                    if (elementEntityMap.TryGetValue(el, out int elId))
+                    {
+                        assignedElemIds.Add(elId);
+                    }
+                }
+                if (assignedElemIds.Count > 0)
+                {
+                    w.Add("IFCRELASSIGNSTOCONTROL",
+                        $"{StepWriter.Str(IfcGuid.NewGuid())},{StepWriter.Ref(ownerHistoryId)},$,$,{StepWriter.List(assignedElemIds.Select(StepWriter.Ref))},$,{StepWriter.Ref(ciId)}");
+                }
+            }
+
+            // Sub-cost items via IFCRELNESTING
+            foreach (var item in cs.AllCostItems)
+            {
+                if (item.SubCostItems.Count > 0 && itemEntityMap.TryGetValue(item, out int parentCiId))
+                {
+                    var subCiIds = item.SubCostItems.Where(s => itemEntityMap.ContainsKey(s)).Select(s => itemEntityMap[s]).ToList();
+                    if (subCiIds.Count > 0)
+                    {
+                        w.Add("IFCRELNESTING",
+                            $"{StepWriter.Str(IfcGuid.NewGuid())},{StepWriter.Ref(ownerHistoryId)},$,$,{StepWriter.Ref(parentCiId)},{StepWriter.List(subCiIds.Select(StepWriter.Ref))}");
+                    }
+                }
+            }
+
+            if (csItemIds.Count > 0)
+            {
+                w.Add("IFCRELASSIGNSTOCONTROL",
+                    $"{StepWriter.Str(IfcGuid.NewGuid())},{StepWriter.Ref(ownerHistoryId)},$,$,{StepWriter.List(csItemIds.Select(StepWriter.Ref))},$,{StepWriter.Ref(csId)}");
+            }
+        }
+
         // 9. Material Layers & Profiles
         var materialEntityMap = new Dictionary<IfcMaterial, int>();
         foreach (var mat in Materials)
@@ -1290,6 +1588,14 @@ public sealed class IfcModel
         using var fileStream = File.OpenRead(path);
         using var fileReader = new StreamReader(fileStream, Encoding.UTF8);
         return Open(fileReader, Path.GetFileNameWithoutExtension(path));
+    }
+
+    /// <summary>Parses an existing IFC STEP physical file or stream into a structured model.</summary>
+    public static IfcModel Open(Stream stream, string? modelName = null)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 65536, leaveOpen: true);
+        return Open(reader, modelName);
     }
 
     /// <summary>Parses an existing IFC STEP stream into a structured model with storeys, elements, properties, and meshes.</summary>
@@ -1724,6 +2030,22 @@ public sealed class IfcModel
             groupMap[grpEnt.Id] = grp;
         }
 
+        foreach (var zoneEnt in step.OfType("IFCZONE"))
+        {
+            string zoneGuid = zoneEnt.GetString(0) ?? IfcGuid.NewGuid();
+            string zName = zoneEnt.GetString(2) ?? "Zone";
+            string? zDesc = zoneEnt.GetString(3);
+            string? zType = zoneEnt.GetString(4);
+
+            var zone = new IfcZone(zName, zType)
+            {
+                GlobalId = zoneGuid,
+                Description = zDesc,
+            };
+            model.Zones.Add(zone);
+            groupMap[zoneEnt.Id] = zone;
+        }
+
         foreach (var relGroup in step.OfType("IFCRELASSIGNSTOGROUP"))
         {
             int? groupId = relGroup.GetRef(6);
@@ -1732,9 +2054,296 @@ public sealed class IfcModel
                 var memberIds = relGroup.GetRefList(4);
                 foreach (int mId in memberIds)
                 {
-                    if (allElementsMap.TryGetValue(mId, out var elem) && !targetGroup.Elements.Contains(elem))
+                    if (allElementsMap.TryGetValue(mId, out var elem))
                     {
-                        targetGroup.Elements.Add(elem);
+                        if (targetGroup is IfcZone z && elem is IfcSpace sp)
+                        {
+                            z.AddSpace(sp);
+                        }
+                        else if (!targetGroup.Elements.Contains(elem))
+                        {
+                            targetGroup.Elements.Add(elem);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 9b. Parse 4D Construction Work Schedules (IFCWORKSCHEDULE, IFCTASK, IFCTASKTIME, IFCSCHEDULETIMECONTROL, IFCRELASSIGNSTOPROCESS, IFCRELSEQUENCE)
+        var taskMap = new Dictionary<int, Model.Sequence.IfcTask>();
+        foreach (var tEnt in step.OfType("IFCTASK"))
+        {
+            string tGuid = tEnt.GetString(0) ?? IfcGuid.NewGuid();
+            string tName = tEnt.GetString(2) ?? "Task";
+            string? tDesc = tEnt.GetString(3);
+            string? tIdent = tEnt.GetString(5);
+            string? tStatus = tEnt.GetString(6);
+            int? priority = tEnt.GetInt(9);
+
+            var task = new Model.Sequence.IfcTask(tName, tIdent)
+            {
+                GlobalId = tGuid,
+                Description = tDesc,
+                Status = tStatus,
+                Priority = priority
+            };
+
+            var timeRef = tEnt.GetRef(10);
+            if (timeRef.HasValue)
+            {
+                var timeEnt = step.Find(timeRef.Value);
+                if (timeEnt is not null)
+                {
+                    task.Time = new Model.Sequence.IfcTaskTime();
+                    if (DateTime.TryParse(timeEnt.GetString(10), CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var pStart))
+                        task.Time.PlannedStartDate = pStart;
+                    if (DateTime.TryParse(timeEnt.GetString(11), CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var pFin))
+                        task.Time.PlannedFinishDate = pFin;
+                    if (DateTime.TryParse(timeEnt.GetString(12), CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var aStart))
+                        task.Time.ActualStartDate = aStart;
+                    if (DateTime.TryParse(timeEnt.GetString(13), CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var aFin))
+                        task.Time.ActualFinishDate = aFin;
+                    task.Time.Completion = timeEnt.GetReal(14);
+                }
+            }
+
+            taskMap[tEnt.Id] = task;
+        }
+
+        foreach (var wsEnt in step.OfType("IFCWORKSCHEDULE"))
+        {
+            string wsGuid = wsEnt.GetString(0) ?? IfcGuid.NewGuid();
+            string wsName = wsEnt.GetString(2) ?? "Schedule";
+            string? wsDesc = wsEnt.GetString(3);
+            var ws = new Model.Sequence.IfcWorkSchedule(wsName, wsDesc)
+            {
+                GlobalId = wsGuid
+            };
+            if (DateTime.TryParse(wsEnt.GetString(10), CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var wsStart))
+                ws.StartTime = wsStart;
+            if (DateTime.TryParse(wsEnt.GetString(11), CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var wsFin))
+                ws.FinishTime = wsFin;
+
+            model.WorkSchedules.Add(ws);
+        }
+
+        // Connect tasks to elements via IFCRELASSIGNSTOPROCESS
+        foreach (var relProc in step.OfType("IFCRELASSIGNSTOPROCESS"))
+        {
+            var procRef = relProc.GetRef(6);
+            if (procRef.HasValue && taskMap.TryGetValue(procRef.Value, out var task))
+            {
+                foreach (var elId in relProc.GetRefList(4))
+                {
+                    if (allElementsMap.TryGetValue(elId, out var el))
+                    {
+                        task.AssignElement(el);
+                    }
+                }
+            }
+        }
+
+        // Connect sequence dependencies via IFCRELSEQUENCE
+        foreach (var relSeq in step.OfType("IFCRELSEQUENCE"))
+        {
+            var relProcRef = relSeq.GetRef(4);
+            var relSuccRef = relSeq.GetRef(5);
+            if (relProcRef.HasValue && relSuccRef.HasValue &&
+                taskMap.TryGetValue(relProcRef.Value, out var pred) &&
+                taskMap.TryGetValue(relSuccRef.Value, out var succ))
+            {
+                string? seqTypeStr = relSeq.GetString(7);
+                var seqType = seqTypeStr?.Contains("START_START", StringComparison.OrdinalIgnoreCase) == true ? Model.Sequence.IfcSequenceType.StartToStart :
+                              seqTypeStr?.Contains("START_FINISH", StringComparison.OrdinalIgnoreCase) == true ? Model.Sequence.IfcSequenceType.StartToFinish :
+                              seqTypeStr?.Contains("FINISH_FINISH", StringComparison.OrdinalIgnoreCase) == true ? Model.Sequence.IfcSequenceType.FinishToFinish :
+                              Model.Sequence.IfcSequenceType.FinishToStart;
+                pred.AddSuccessor(succ, seqType);
+            }
+        }
+
+        // 9c. Parse 5D Cost Schedules & Cost Items (IFCCOSTSCHEDULE, IFCCOSTITEM, IFCAPPLIEDVALUE, IFCRELASSIGNSTOCONTROL, IFCRELNESTING)
+        var costItemMap = new Dictionary<int, Model.Cost.IfcCostItem>();
+        foreach (var ciEnt in step.OfType("IFCCOSTITEM"))
+        {
+            string ciGuid = ciEnt.GetString(0) ?? IfcGuid.NewGuid();
+            string ciName = ciEnt.GetString(2) ?? "Cost Item";
+            string? ciDesc = ciEnt.GetString(3);
+            string? ciCode = ciEnt.GetString(5);
+
+            var ci = new Model.Cost.IfcCostItem(ciName, ciCode)
+            {
+                GlobalId = ciGuid,
+                Description = ciDesc
+            };
+
+            // Direct references in IFC4 (argument 6: CostValues, argument 7: CostQuantities)
+            foreach (int vRef in ciEnt.GetRefList(6))
+            {
+                var vEnt = step.Find(vRef);
+                if (vEnt is not null && vEnt.Type.Equals("IFCAPPLIEDVALUE", StringComparison.OrdinalIgnoreCase))
+                {
+                    string? vName = vEnt.GetString(0);
+                    string? vDesc = vEnt.GetString(1);
+                    string? rawAmount = vEnt.GetRaw(2);
+                    string cleanAmount = ExtractNominalValue(rawAmount);
+                    string? vCat = vEnt.GetString(6);
+
+                    if (double.TryParse(cleanAmount, NumberStyles.Float, CultureInfo.InvariantCulture, out double amt))
+                    {
+                        if (string.Equals(vName, "UnitRate", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(vCat, "UnitRate", StringComparison.OrdinalIgnoreCase))
+                        {
+                            ci.UnitRate = amt;
+                            if (!string.IsNullOrEmpty(vDesc)) ci.UnitBasis = vDesc;
+                        }
+                        else
+                        {
+                            ci.AddCostValue(amt, "USD", vCat, vName);
+                        }
+                    }
+                }
+            }
+
+            foreach (int qRef in ciEnt.GetRefList(7))
+            {
+                var qEnt = step.Find(qRef);
+                if (qEnt is not null && qEnt.Type.StartsWith("IFCQUANTITY", StringComparison.OrdinalIgnoreCase))
+                {
+                    double? qVal = qEnt.GetReal(3);
+                    if (qVal.HasValue)
+                    {
+                        ci.Quantity = qVal.Value;
+                        string? qDesc = qEnt.GetString(1);
+                        if (!string.IsNullOrEmpty(qDesc)) ci.UnitBasis = qDesc;
+                    }
+                }
+            }
+
+            costItemMap[ciEnt.Id] = ci;
+        }
+
+        foreach (var csEnt in step.OfType("IFCCOSTSCHEDULE"))
+        {
+            string csGuid = csEnt.GetString(0) ?? IfcGuid.NewGuid();
+            string csName = csEnt.GetString(2) ?? "Cost Schedule";
+            string? csDesc = csEnt.GetString(3);
+            string? csCurrency = csEnt.GetString(4);
+            var cs = new Model.Cost.IfcCostSchedule(csName, string.IsNullOrWhiteSpace(csCurrency) ? "USD" : csCurrency)
+            {
+                GlobalId = csGuid,
+                Description = csDesc
+            };
+
+            string? typeRaw = csEnt.GetRaw(12) ?? csEnt.GetRaw(6);
+            if (!string.IsNullOrWhiteSpace(typeRaw))
+            {
+                string cleanType = typeRaw.Trim('.').Replace("_", "");
+                if (Enum.TryParse<Model.Cost.IfcCostScheduleType>(cleanType, true, out var parsedType))
+                {
+                    cs.ScheduleType = parsedType;
+                }
+            }
+
+            model.CostSchedules.Add(cs);
+        }
+
+        // Connect sub-items via IFCRELNESTING
+        foreach (var relNest in step.OfType("IFCRELNESTING"))
+        {
+            int? parentRef = relNest.GetRef(4);
+            if (parentRef.HasValue && costItemMap.TryGetValue(parentRef.Value, out var parentItem))
+            {
+                foreach (int childRef in relNest.GetRefList(5))
+                {
+                    if (costItemMap.TryGetValue(childRef, out var childItem) && !parentItem.SubCostItems.Contains(childItem))
+                    {
+                        parentItem.SubCostItems.Add(childItem);
+                    }
+                }
+            }
+        }
+
+        // Connect control assignments via IFCRELASSIGNSTOCONTROL
+        foreach (var relCtrl in step.OfType("IFCRELASSIGNSTOCONTROL"))
+        {
+            var ctrlRef = relCtrl.GetRef(6);
+            if (!ctrlRef.HasValue) continue;
+
+            string? ctrlGuid = step.Find(ctrlRef.Value)?.GetString(0);
+
+            // Connect to work schedule
+            var ws = model.WorkSchedules.Find(s => s.GlobalId == ctrlGuid);
+            if (ws is not null)
+            {
+                foreach (var rId in relCtrl.GetRefList(4))
+                {
+                    if (taskMap.TryGetValue(rId, out var task) && !ws.RootTasks.Contains(task))
+                    {
+                        ws.RootTasks.Add(task);
+                    }
+                }
+                continue;
+            }
+
+            // Connect to cost schedule
+            var cs = model.CostSchedules.Find(s => s.GlobalId == ctrlGuid);
+            if (cs is not null)
+            {
+                foreach (var rId in relCtrl.GetRefList(4))
+                {
+                    if (costItemMap.TryGetValue(rId, out var item) && !cs.RootCostItems.Contains(item))
+                    {
+                        cs.RootCostItems.Add(item);
+                    }
+                }
+                continue;
+            }
+
+            // Connect elements or applied values/quantities to cost item
+            if (costItemMap.TryGetValue(ctrlRef.Value, out var costItem))
+            {
+                foreach (var rId in relCtrl.GetRefList(4))
+                {
+                    if (allElementsMap.TryGetValue(rId, out var el))
+                    {
+                        costItem.AssignElement(el);
+                    }
+                    else
+                    {
+                        var relatedEnt = step.Find(rId);
+                        if (relatedEnt is not null)
+                        {
+                            if (relatedEnt.Type.Equals("IFCAPPLIEDVALUE", StringComparison.OrdinalIgnoreCase))
+                            {
+                                string? vName = relatedEnt.GetString(0);
+                                string? vDesc = relatedEnt.GetString(1);
+                                string cleanAmount = ExtractNominalValue(relatedEnt.GetRaw(2));
+                                string? vCat = relatedEnt.GetString(6);
+                                if (double.TryParse(cleanAmount, NumberStyles.Float, CultureInfo.InvariantCulture, out double amt))
+                                {
+                                    if (string.Equals(vName, "UnitRate", StringComparison.OrdinalIgnoreCase) ||
+                                        string.Equals(vCat, "UnitRate", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        costItem.UnitRate = amt;
+                                        if (!string.IsNullOrEmpty(vDesc)) costItem.UnitBasis = vDesc;
+                                    }
+                                    else
+                                    {
+                                        costItem.AddCostValue(amt, "USD", vCat, vName);
+                                    }
+                                }
+                            }
+                            else if (relatedEnt.Type.StartsWith("IFCQUANTITY", StringComparison.OrdinalIgnoreCase))
+                            {
+                                double? qVal = relatedEnt.GetReal(3);
+                                if (qVal.HasValue)
+                                {
+                                    costItem.Quantity = qVal.Value;
+                                    string? qDesc = relatedEnt.GetString(1);
+                                    if (!string.IsNullOrEmpty(qDesc)) costItem.UnitBasis = qDesc;
+                                }
+                            }
+                        }
                     }
                 }
             }

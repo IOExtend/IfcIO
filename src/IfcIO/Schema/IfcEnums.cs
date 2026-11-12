@@ -30,6 +30,19 @@ public enum IfcLengthUnit
     Inch,
 }
 
+internal static class IfcLengthUnitExtensions
+{
+    /// <summary>Length of one model unit in metres.</summary>
+    internal static double MetresPerUnit(this IfcLengthUnit unit) => unit switch
+    {
+        IfcLengthUnit.Millimetre => 0.001,
+        IfcLengthUnit.Metre => 1.0,
+        IfcLengthUnit.Foot => 0.3048,
+        IfcLengthUnit.Inch => 0.0254,
+        _ => throw new ArgumentOutOfRangeException(nameof(unit), unit, "Unknown length unit."),
+    };
+}
+
 /// <summary>
 /// Plane angle units supported in IFC project unit assignment.
 /// </summary>

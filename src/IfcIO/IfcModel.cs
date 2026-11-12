@@ -1627,6 +1627,17 @@ public sealed class IfcModel
             model.BuildingName = buildingEntity.GetString(2) ?? model.BuildingName;
         }
 
+        // 1b. Units: geometry is kept in model length units. A unit without an IfcLengthUnit
+        // counterpart (e.g. centimetres) is converted to metres while reading.
+        double? fileMetresPerUnit = ParseLengthUnit(step, projectEntity);
+        double geometryScale = 1.0;
+        if (fileMetresPerUnit.HasValue)
+        {
+            var knownUnit = ToLengthUnit(fileMetresPerUnit.Value);
+            model.LengthUnit = knownUnit ?? IfcLengthUnit.Metre;
+            if (knownUnit is null) geometryScale = fileMetresPerUnit.Value;
+        }
+
         // 2. Parse Storeys
         var storeyMap = new Dictionary<int, IfcBuildingStorey>();
         foreach (var sEnt in step.OfType("IFCBUILDINGSTOREY"))
@@ -1634,7 +1645,7 @@ public sealed class IfcModel
             var storey = new IfcBuildingStorey
             {
                 Name = sEnt.GetString(2) ?? $"Level {sEnt.Id}",
-                Elevation = sEnt.GetReal(9) ?? 0.0,
+                Elevation = (sEnt.GetReal(9) ?? 0.0) * geometryScale,
                 GlobalId = sEnt.GetString(0),
             };
             model.Storeys.Add(storey);
@@ -1808,7 +1819,12 @@ public sealed class IfcModel
             }
         }
 
-        // 6. Parse Elements & Meshes
+        // 6. Parse Elements & Meshes (meshes are resolved into world coordinates)
+        var geometry = new GeometryReadContext(
+            step,
+            geomToMaterialMap,
+            IfcTransform.Scale(geometryScale).Multiply(ParseWorldCoordinateSystem(step)),
+            keepParametric: geometryScale == 1.0);
         var defaultStorey = model.Storeys[0];
         var allElementsMap = new Dictionary<int, IfcElement>();
 
@@ -1897,7 +1913,8 @@ public sealed class IfcModel
             int? shapeDefId = entity.GetRef(6);
             if (shapeDefId.HasValue)
             {
-                var mesh = ParseGeometry(step, shapeDefId.Value, name, geomToMaterialMap, out var mat, out var solid, out var revSolid, out var boolResult);
+                var placement = ResolveObjectPlacement(geometry, entity.GetRef(5));
+                var mesh = ParseGeometry(geometry, shapeDefId.Value, name, placement, out var mat, out var solid, out var revSolid, out var boolResult);
                 if (mesh is not null)
                 {
                     element.Mesh = mesh;
@@ -2484,18 +2501,10 @@ public sealed class IfcModel
             string portName = portEnt.GetString(2) ?? "Port";
             string? desc = portEnt.GetString(3);
             string? sysType = portEnt.GetString(4);
-            int? plId = portEnt.GetRef(5);
-            var pos = ParsePlacement3D(step, plId);
-            var dir = IfcVector3.UnitZ;
-            if (plId.HasValue)
-            {
-                var plEnt = step.Find(plId.Value);
-                if (plEnt is not null && plEnt.Type.Equals("IFCAXIS2PLACEMENT3D", StringComparison.OrdinalIgnoreCase))
-                {
-                    int? dirId = plEnt.GetRef(1);
-                    if (dirId.HasValue) dir = ParseDirection(step, dirId);
-                }
-            }
+            var portPlacement = ResolveObjectPlacement(geometry, portEnt.GetRef(5));
+            var pos = portPlacement.Origin;
+            var dir = portPlacement.Z.Normalized();
+            if (dir == IfcVector3.Zero) dir = IfcVector3.UnitZ;
 
             string? rawFlow = portEnt.GetRaw(7);
             var flow = IfcFlowDirection.NotDefined;
@@ -2771,11 +2780,56 @@ public sealed class IfcModel
         return w.Add("IFCREVOLVEDAREASOLID", $"{StepWriter.Ref(profileId)},{StepWriter.Ref(solidPlacementId)},{StepWriter.Ref(axisPlacementId)},{StepWriter.Real(solid.Angle)}");
     }
 
+    /// <summary>State shared while reading product geometry: caches for placements and mapped representations.</summary>
+    private sealed class GeometryReadContext(StepFile step, Dictionary<int, IfcMaterial> geomToMaterialMap, IfcTransform root, bool keepParametric)
+    {
+        public StepFile Step { get; } = step;
+        public Dictionary<int, IfcMaterial> GeomToMaterialMap { get; } = geomToMaterialMap;
+
+        /// <summary>Unit scale applied after the world coordinate system of the model context.</summary>
+        public IfcTransform Root { get; } = root;
+
+        /// <summary>False when geometry is rescaled to metres: parametric solids stay in file units and would disagree with LengthUnit.</summary>
+        public bool KeepParametric { get; } = keepParametric;
+        public Dictionary<int, IfcTransform> Placements { get; } = [];
+        public Dictionary<int, (IfcMesh? Mesh, IfcMaterial? Material)> MappedRepresentations { get; } = [];
+        public HashSet<int> MapsInProgress { get; } = [];
+
+        /// <summary>
+        /// Cap on vertices materialised while reading, linear in the file size: nested IfcMappedItems can
+        /// otherwise multiply a small file into exponentially many vertices.
+        /// </summary>
+        public long VertexBudget { get; } = MinVertexBudget + (VerticesPerEntity * (long)step.Entities.Count);
+
+        private long _materialisedVertices;
+
+        public void ChargeVertices(int count)
+        {
+            _materialisedVertices += count;
+            if (_materialisedVertices > VertexBudget)
+            {
+                throw new InvalidDataException(
+                    $"IFC geometry expands to more than {VertexBudget} vertices (limit for {Step.Entities.Count} entities); check for nested IfcMappedItem amplification.");
+            }
+        }
+    }
+
+    private const int MaxMappingDepth = 64;
+    private const long MinVertexBudget = 1_000_000;
+    private const long VerticesPerEntity = 256;
+
+    /// <summary>Parametric form of the first body item, in the item's own coordinates.</summary>
+    private readonly record struct ParametricBody(IfcExtrudedAreaSolid? Solid, IfcRevolvedAreaSolid? Revolved, IfcBooleanResult? Boolean);
+
+    /// <summary>
+    /// Reads the product shape into one world-space mesh (all items of the body representation merged).
+    /// Parametric outputs describe the first item in its own coordinates, as before (no placement applied).
+    /// </summary>
     private static IfcMesh? ParseGeometry(
-        StepFile step,
+        GeometryReadContext ctx,
         int shapeDefId,
         string meshName,
-        Dictionary<int, IfcMaterial> geomToMaterialMap,
+        IfcTransform placement,
         out IfcMaterial? material,
         out IfcExtrudedAreaSolid? solid,
         out IfcRevolvedAreaSolid? revolvedSolid,
@@ -2785,103 +2839,436 @@ public sealed class IfcModel
         solid = null;
         revolvedSolid = null;
         booleanResult = null;
-        var shapeDef = step.Find(shapeDefId);
+        var shapeDef = ctx.Step.Find(shapeDefId);
         if (shapeDef is null) return null;
 
-        var repIds = shapeDef.GetRefList(2);
-        foreach (int repId in repIds)
+        var reps = shapeDef.GetRefList(2)
+            .Select(id => ctx.Step.Find(id))
+            .OfType<StepEntity>()
+            .Where(r => r.Type.Equals("IFCSHAPEREPRESENTATION", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        // 'Body' first; other representations (Axis, Box, FootPrint...) only when no body geometry is readable.
+        static bool IsBody(StepEntity rep) => string.Equals(rep.GetString(1), "Body", StringComparison.OrdinalIgnoreCase);
+        foreach (var rep in reps.Where(IsBody).Concat(reps.Where(r => !IsBody(r))))
         {
-            var repEnt = step.Find(repId);
-            if (repEnt is null || !repEnt.Type.Equals("IFCSHAPEREPRESENTATION", StringComparison.OrdinalIgnoreCase))
-                continue;
+            IfcMaterial? repMaterial = null;
+            var mesh = ParseRepresentationItems(ctx, rep, meshName, ref repMaterial, out var parametric);
+            if (mesh is null) continue;
 
-            var itemIds = repEnt.GetRefList(3);
-            foreach (int itemId in itemIds)
+            material = repMaterial;
+            if (parametric is { } body && ctx.KeepParametric)
             {
-                var itemEnt = step.Find(itemId);
-                if (itemEnt is null) continue;
-
-                if (geomToMaterialMap.TryGetValue(itemId, out var mat))
-                {
-                    material = mat;
-                }
-
-                // A/B. Meshes (Brep / TriangulatedFaceSet)
-                var mesh = ParseMeshEntity(step, itemEnt, meshName);
-                if (mesh is not null)
-                {
-                    return mesh;
-                }
-
-                // C. IFCEXTRUDEDAREASOLID
-                if (itemEnt.Type.Equals("IFCEXTRUDEDAREASOLID", StringComparison.OrdinalIgnoreCase))
-                {
-                    int? profileId = itemEnt.GetRef(0);
-                    int? posPlacementId = itemEnt.GetRef(1);
-                    int? dirId = itemEnt.GetRef(2);
-                    double depth = itemEnt.GetReal(3) ?? 0.0;
-
-                    var profile = ParseProfile(step, profileId);
-                    if (profile is not null)
-                    {
-                        var pos3d = ParsePlacement3D(step, posPlacementId);
-                        var dir3d = ParseDirection(step, dirId);
-                        var extrudedSolid = new IfcExtrudedAreaSolid(profile, depth, pos3d, dir3d);
-                        solid = extrudedSolid;
-                        return extrudedSolid.ToMesh(16, meshName);
-                    }
-                }
-
-                // D. IFCREVOLVEDAREASOLID
-                if (itemEnt.Type.Equals("IFCREVOLVEDAREASOLID", StringComparison.OrdinalIgnoreCase))
-                {
-                    int? profileId = itemEnt.GetRef(0);
-                    int? posPlacementId = itemEnt.GetRef(1);
-                    int? axisId = itemEnt.GetRef(2);
-                    double angle = itemEnt.GetReal(3) ?? (2.0 * Math.PI);
-
-                    var profile = ParseProfile(step, profileId);
-                    if (profile is not null)
-                    {
-                        var pos3d = ParsePlacement3D(step, posPlacementId);
-                        var axis1 = ParseAxis1Placement(step, axisId);
-                        var revSolid = new IfcRevolvedAreaSolid(profile, angle, pos3d, axis1);
-                        revolvedSolid = revSolid;
-                        return revSolid.ToMesh(16, 24, meshName);
-                    }
-                }
-
-                // E. IFCBOOLEANRESULT / IFCBOOLEANCLIPPINGRESULT
-                if (itemEnt.Type.Equals("IFCBOOLEANRESULT", StringComparison.OrdinalIgnoreCase) ||
-                    itemEnt.Type.Equals("IFCBOOLEANCLIPPINGRESULT", StringComparison.OrdinalIgnoreCase))
-                {
-                    var boolRes = ParseBooleanResult(step, itemEnt);
-                    if (boolRes is not null)
-                    {
-                        booleanResult = boolRes;
-                        return boolRes.ToMesh(meshName);
-                    }
-                }
+                solid = body.Solid;
+                revolvedSolid = body.Revolved;
+                booleanResult = body.Boolean;
             }
+
+            var world = placement.ApplyTo(mesh);
+            return IfcMesh.Create(world.Id, meshName, world.Vertices, world.Indices);
         }
 
         return null;
     }
 
+    /// <summary>Merges all readable items of a shape representation into one mesh in the representation's coordinates.</summary>
+    private static IfcMesh? ParseRepresentationItems(
+        GeometryReadContext ctx,
+        StepEntity? repEnt,
+        string meshName,
+        ref IfcMaterial? material,
+        out ParametricBody? parametric)
+    {
+        parametric = null;
+        if (repEnt is null) return null;
+
+        var itemIds = repEnt.GetRefList(3);
+        var parts = new List<IfcMesh>(itemIds.Count);
+        foreach (int itemId in itemIds)
+        {
+            var itemEnt = ctx.Step.Find(itemId);
+            if (itemEnt is null) continue;
+
+            if (material is null && ctx.GeomToMaterialMap.TryGetValue(itemId, out var mat))
+            {
+                material = mat;
+            }
+
+            var mesh = ParseRepresentationItem(ctx, itemEnt, meshName, ref material, out var itemParametric);
+            if (mesh is null) continue;
+            ctx.ChargeVertices(mesh.Vertices.Count);
+            if (parts.Count == 0) parametric = itemParametric;
+            parts.Add(mesh);
+        }
+
+        if (parts.Count == 0) return null;
+        if (parts.Count == 1) return parts[0];
+
+        var vertices = new List<IfcVector3>(parts.Sum(p => p.Vertices.Count));
+        var indices = new List<int>(parts.Sum(p => p.Indices.Count));
+        foreach (var part in parts)
+        {
+            int offset = vertices.Count;
+            vertices.AddRange(part.Vertices);
+            foreach (int index in part.Indices) indices.Add(index + offset);
+        }
+        return IfcMesh.Create(parts[0].Id, meshName, vertices, indices);
+    }
+
+    /// <summary>Reads one representation item into a mesh in the coordinates of its representation.</summary>
+    private static IfcMesh? ParseRepresentationItem(
+        GeometryReadContext ctx,
+        StepEntity itemEnt,
+        string meshName,
+        ref IfcMaterial? material,
+        out ParametricBody? parametric)
+    {
+        parametric = null;
+        var step = ctx.Step;
+
+        // A/B. Meshes (Brep / TriangulatedFaceSet / surface models)
+        var mesh = ParseMeshEntity(step, itemEnt, meshName);
+        if (mesh is not null) return mesh;
+
+        // C/D. IFCEXTRUDEDAREASOLID / IFCREVOLVEDAREASOLID
+        var swept = ParseSweptSolid(step, itemEnt, meshName, out var extruded, out var revolved, out _);
+        if (swept is not null)
+        {
+            parametric = new ParametricBody(extruded, revolved, null);
+            return swept;
+        }
+
+        // E. IFCBOOLEANRESULT / IFCBOOLEANCLIPPINGRESULT
+        if (itemEnt.Type.Equals("IFCBOOLEANRESULT", StringComparison.OrdinalIgnoreCase) ||
+            itemEnt.Type.Equals("IFCBOOLEANCLIPPINGRESULT", StringComparison.OrdinalIgnoreCase))
+        {
+            var boolRes = ParseBooleanResult(step, itemEnt);
+            if (boolRes is null) return null;
+            parametric = new ParametricBody(null, null, boolRes);
+            return boolRes.ToMesh(meshName);
+        }
+
+        // F. IFCMAPPEDITEM: MappingTarget * MappingOrigin * mapped representation.
+        if (itemEnt.Type.Equals("IFCMAPPEDITEM", StringComparison.OrdinalIgnoreCase))
+        {
+            int? mapId = itemEnt.GetRef(0);
+            if (!mapId.HasValue) return null;
+
+            var (mapMesh, mapMaterial) = ParseMappedRepresentation(ctx, mapId.Value, meshName);
+            material ??= mapMaterial;
+            if (mapMesh is null) return null;
+            return ParseCartesianTransformationOperator(step, itemEnt.GetRef(1)).ApplyTo(mapMesh);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Meshes an IfcExtrudedAreaSolid or IfcRevolvedAreaSolid in the coordinates of its representation and returns
+    /// its parametric form, which keeps only the Position location (as IfcModel stores and writes it).
+    /// </summary>
+    /// <param name="fullPlacement">True when Position or the profile Position rotates, so the parametric form does not describe the mesh.</param>
+    private static IfcMesh? ParseSweptSolid(
+        StepFile step,
+        StepEntity ent,
+        string meshName,
+        out IfcExtrudedAreaSolid? extruded,
+        out IfcRevolvedAreaSolid? revolved,
+        out bool fullPlacement)
+    {
+        extruded = null;
+        revolved = null;
+        fullPlacement = false;
+        bool isExtruded = ent.Type.Equals("IFCEXTRUDEDAREASOLID", StringComparison.OrdinalIgnoreCase);
+        if (!isExtruded && !ent.Type.Equals("IFCREVOLVEDAREASOLID", StringComparison.OrdinalIgnoreCase)) return null;
+
+        var profile = ParseProfile(step, ent.GetRef(0));
+        if (profile is null) return null;
+
+        var position = ParseAxis2Placement(step, ent.GetRef(1));
+        var profileRotation = ParseProfileRotation(step, ent.GetRef(0));
+        fullPlacement = !position.IsTranslationOnly || !profileRotation.IsIdentity;
+
+        // shortcut: with a location-only Position the parametric solid's own meshing is used, so files written by
+        // IfcModel read back unchanged; it differs from IFC for non-+Z extrusion directions (profile frame) and
+        // for revolution axes away from the origin (Axis taken as absolute). Use the IFC path below for both if needed.
+        if (isExtruded)
+        {
+            double depth = ent.GetReal(3) ?? 0.0;
+            extruded = new IfcExtrudedAreaSolid(profile, depth, position.Origin, ParseDirection(step, ent.GetRef(2)));
+            if (!fullPlacement) return extruded.ToMesh(16, meshName);
+
+            // IFC: profile in the XY plane of Position, swept along ExtrudedDirection (Position coordinates):
+            // extrude along local Z, then shear Z onto the direction.
+            var direction = ParseCoordinates(step.Find(ent.GetRef(2))).Normalized();
+            if (direction == IfcVector3.Zero) direction = IfcVector3.UnitZ;
+            var shear = new IfcTransform(IfcVector3.UnitX, IfcVector3.UnitY, direction, IfcVector3.Zero);
+            var local = new IfcExtrudedAreaSolid(profile, depth).ToMesh(16, meshName);
+            return position.Multiply(shear).Multiply(profileRotation).ApplyTo(local);
+        }
+
+        // Angle is read as radians, matching what IfcModel writes.
+        double angle = ent.GetReal(3) ?? (2.0 * Math.PI);
+        var axis = ParseAxis1Placement(step, ent.GetRef(2));
+        revolved = new IfcRevolvedAreaSolid(profile, angle, position.Origin, axis);
+        if (!fullPlacement) return revolved.ToMesh(16, 24, meshName);
+
+        // shortcut: a rotated profile Position is ignored for revolved solids (rare); rotate the profile points first if a model needs it.
+        return position.ApplyTo(new IfcRevolvedAreaSolid(profile, angle, IfcVector3.Zero, axis).ToMesh(16, 24, meshName));
+    }
+
+    /// <summary>Reads an IfcRepresentationMap once, in the coordinates of the mapping (MappingOrigin applied).</summary>
+    private static (IfcMesh? Mesh, IfcMaterial? Material) ParseMappedRepresentation(GeometryReadContext ctx, int mapId, string meshName)
+    {
+        if (ctx.MappedRepresentations.TryGetValue(mapId, out var cached)) return cached;
+
+        var mapEnt = ctx.Step.Find(mapId);
+        if (mapEnt is null || !mapEnt.Type.Equals("IFCREPRESENTATIONMAP", StringComparison.OrdinalIgnoreCase))
+        {
+            return (null, null);
+        }
+
+        if (ctx.MapsInProgress.Count >= MaxMappingDepth)
+        {
+            throw new InvalidDataException($"IFC representation map #{mapId} is nested more than {MaxMappingDepth} levels deep.");
+        }
+
+        if (!ctx.MapsInProgress.Add(mapId))
+        {
+            throw new InvalidDataException($"IFC representation map #{mapId} maps itself (IfcMappedItem cycle).");
+        }
+
+        IfcMaterial? material = null;
+        var mesh = ParseRepresentationItems(ctx, ctx.Step.Find(mapEnt.GetRef(1)), meshName, ref material, out _);
+        var result = (mesh is null ? null : ParseAxis2Placement(ctx.Step, mapEnt.GetRef(0)).ApplyTo(mesh), material);
+
+        ctx.MapsInProgress.Remove(mapId);
+        ctx.MappedRepresentations[mapId] = result;
+        return result;
+    }
+
+    /// <summary>Resolves an IfcObjectPlacement (PlacementRelTo chain) into a world transform in model length units.</summary>
+    private static IfcTransform ResolveObjectPlacement(GeometryReadContext ctx, int? placementId)
+    {
+        // Walk up to a resolved or root placement, then compose downwards (iterative: chains may be deep).
+        var chain = new List<StepEntity>();
+        var visited = new HashSet<int>();
+        var world = ctx.Root;
+        for (int? id = placementId; id.HasValue;)
+        {
+            if (ctx.Placements.TryGetValue(id.Value, out var cached))
+            {
+                world = cached;
+                break;
+            }
+
+            var ent = ctx.Step.Find(id.Value);
+            // shortcut: IfcGridPlacement (and any non-local placement) resolves to the world origin; add grid intersection support when a model needs it.
+            if (ent is null || !ent.Type.Equals("IFCLOCALPLACEMENT", StringComparison.OrdinalIgnoreCase)) break;
+            if (!visited.Add(id.Value))
+            {
+                throw new InvalidDataException($"IFC placement #{id.Value} is relative to itself (PlacementRelTo cycle).");
+            }
+
+            chain.Add(ent);
+            id = ent.GetRef(0);
+        }
+
+        for (int i = chain.Count - 1; i >= 0; i--)
+        {
+            world = world.Multiply(ParseAxis2Placement(ctx.Step, chain[i].GetRef(1)));
+            ctx.Placements[chain[i].Id] = world;
+        }
+        return world;
+    }
+
+    /// <summary>WorldCoordinateSystem of the 3D 'Model' context: absolute placements are relative to it.</summary>
+    private static IfcTransform ParseWorldCoordinateSystem(StepFile step)
+    {
+        var contexts = step.OfType("IFCGEOMETRICREPRESENTATIONCONTEXT").ToList();
+        var model = contexts.FirstOrDefault(c => string.Equals(c.GetString(1), "Model", StringComparison.OrdinalIgnoreCase))
+            ?? contexts.FirstOrDefault(c => c.GetInt(2) == 3);
+        return model is null ? IfcTransform.Identity : ParseAxis2Placement(step, model.GetRef(4));
+    }
+
+    /// <summary>IfcAxis2Placement3D / IfcAxis2Placement2D as a rigid transform (identity when absent).</summary>
+    private static IfcTransform ParseAxis2Placement(StepFile step, int? placementId)
+    {
+        var ent = step.Find(placementId);
+        if (ent is null) return IfcTransform.Identity;
+
+        var location = ParseCoordinates(step.Find(ent.GetRef(0)));
+        if (ent.Type.Equals("IFCAXIS2PLACEMENT2D", StringComparison.OrdinalIgnoreCase))
+        {
+            var x2 = FirstProjAxis(IfcVector3.UnitZ, ParseOptionalVector(step, ent.GetRef(1)));
+            return new IfcTransform(x2, IfcVector3.Cross(IfcVector3.UnitZ, x2), IfcVector3.UnitZ, location);
+        }
+
+        if (!ent.Type.Equals("IFCAXIS2PLACEMENT3D", StringComparison.OrdinalIgnoreCase)) return IfcTransform.Identity;
+
+        var z = ParseOptionalVector(step, ent.GetRef(1))?.Normalized() ?? IfcVector3.UnitZ;
+        if (z == IfcVector3.Zero) z = IfcVector3.UnitZ;
+        var x = FirstProjAxis(z, ParseOptionalVector(step, ent.GetRef(2)));
+        return new IfcTransform(x, IfcVector3.Cross(z, x), z, location);
+    }
+
+    /// <summary>
+    /// IfcCartesianTransformationOperator (2D/3D, uniform and non-uniform) as an affine transform.
+    /// Y follows Z x X and is reversed when Axis2 points the other way (mirroring).
+    /// </summary>
+    private static IfcTransform ParseCartesianTransformationOperator(StepFile step, int? operatorId)
+    {
+        var ent = step.Find(operatorId);
+        if (ent is null) return IfcTransform.Identity;
+
+        bool is3D = ent.Type.Contains("3D", StringComparison.OrdinalIgnoreCase);
+        bool nonUniform = ent.Type.EndsWith("NONUNIFORM", StringComparison.OrdinalIgnoreCase);
+        var axis1 = ParseOptionalVector(step, ent.GetRef(0));
+        var axis2 = ParseOptionalVector(step, ent.GetRef(1));
+        var origin = ParseCoordinates(step.Find(ent.GetRef(2)));
+        double scale = ent.GetReal(3) ?? 1.0;
+
+        var z = IfcVector3.UnitZ;
+        double scaleY = scale, scaleZ = scale;
+        if (is3D)
+        {
+            z = ParseOptionalVector(step, ent.GetRef(4))?.Normalized() ?? IfcVector3.UnitZ;
+            if (z == IfcVector3.Zero) z = IfcVector3.UnitZ;
+            if (nonUniform)
+            {
+                scaleY = ent.GetReal(5) ?? scale;
+                scaleZ = ent.GetReal(6) ?? scale;
+            }
+        }
+        else if (nonUniform)
+        {
+            scaleY = ent.GetReal(4) ?? scale;
+        }
+
+        var x = FirstProjAxis(z, axis1);
+        var y = IfcVector3.Cross(z, x);
+        // IfcSecondProjAxis: in 3D an omitted Axis2 is (0,1,0); the side of Z x X it lies on decides mirroring.
+        var yReference = axis2 ?? (is3D ? IfcVector3.UnitY : null);
+        if (yReference.HasValue && IfcVector3.Dot(yReference.Value, y) < 0) y = -y;
+        return new IfcTransform(x * scale, y * scaleY, z * scaleZ, origin);
+    }
+
+    /// <summary>IFC IfcFirstProjAxis: the reference direction projected onto the plane normal to <paramref name="z"/>.</summary>
+    private static IfcVector3 FirstProjAxis(IfcVector3 z, IfcVector3? reference)
+    {
+        // Defaulted reference: (1,0,0), or (0,1,0) when Z is (1,0,0). A reference parallel to Z is invalid: use the default.
+        var defaultReference = (z - IfcVector3.UnitX).Length < 1e-9 ? IfcVector3.UnitY : IfcVector3.UnitX;
+        foreach (var candidate in new[] { reference ?? defaultReference, defaultReference, IfcVector3.UnitY })
+        {
+            var x = (candidate - (z * IfcVector3.Dot(candidate, z))).Normalized();
+            if (x != IfcVector3.Zero) return x;
+        }
+        return IfcVector3.UnitY;
+    }
+
+    /// <summary>Rotation of a parameterized profile about its Position (ParseProfile already applies the Position offset).</summary>
+    private static IfcTransform ParseProfileRotation(StepFile step, int? profileId)
+    {
+        var profEnt = step.Find(profileId);
+        if (profEnt is null) return IfcTransform.Identity;
+        var placement = ParseAxis2Placement(step, profEnt.GetRef(2));
+        return placement.Multiply(IfcTransform.Translation(-placement.Origin));
+    }
+
+    private static IfcVector3? ParseOptionalVector(StepFile step, int? id)
+    {
+        var ent = step.Find(id);
+        return ent is null ? null : ParseCoordinates(ent);
+    }
+
+    /// <summary>Coordinates of an IfcCartesianPoint or IfcDirection; missing components are 0.</summary>
+    private static IfcVector3 ParseCoordinates(StepEntity? ent)
+    {
+        if (ent is null) return IfcVector3.Zero;
+        var parts = StepEntity.ParseArguments((ent.GetRaw(0) ?? string.Empty).Trim('(', ')'));
+        double Component(int i) =>
+            i < parts.Count && double.TryParse(parts[i], NumberStyles.Float, CultureInfo.InvariantCulture, out double v) ? v : 0.0;
+        return new IfcVector3(Component(0), Component(1), Component(2));
+    }
+
+    /// <summary>
+    /// Metres per length unit from the project's IfcUnitAssignment (SI or conversion-based unit).
+    /// Null when absent or unrecognised: LengthUnit then keeps its default, as before.
+    /// </summary>
+    private static double? ParseLengthUnit(StepFile step, StepEntity? project)
+    {
+        var assignment = step.Find(project?.GetRef(8)) ?? step.OfType("IFCUNITASSIGNMENT").FirstOrDefault();
+        var unit = assignment?.GetRefList(0)
+            .Select(id => step.Find(id))
+            .FirstOrDefault(u => string.Equals(u?.GetRaw(1), ".LENGTHUNIT.", StringComparison.OrdinalIgnoreCase));
+        return ParseUnitFactor(step, unit, 0);
+    }
+
+    /// <summary>Factor of a named unit relative to its SI base unit.</summary>
+    private static double? ParseUnitFactor(StepFile step, StepEntity? unit, int depth)
+    {
+        if (unit is null || depth > 8) return null;
+
+        if (unit.Type.Equals("IFCSIUNIT", StringComparison.OrdinalIgnoreCase))
+        {
+            return unit.GetRaw(2)?.Trim('.').ToUpperInvariant() switch
+            {
+                null => 1.0,
+                "EXA" => 1e18,
+                "PETA" => 1e15,
+                "TERA" => 1e12,
+                "GIGA" => 1e9,
+                "MEGA" => 1e6,
+                "KILO" => 1e3,
+                "HECTO" => 1e2,
+                "DECA" => 1e1,
+                "DECI" => 1e-1,
+                "CENTI" => 1e-2,
+                "MILLI" => 1e-3,
+                "MICRO" => 1e-6,
+                "NANO" => 1e-9,
+                "PICO" => 1e-12,
+                "FEMTO" => 1e-15,
+                "ATTO" => 1e-18,
+                _ => null,
+            };
+        }
+
+        if (unit.Type.StartsWith("IFCCONVERSIONBASEDUNIT", StringComparison.OrdinalIgnoreCase))
+        {
+            var measure = step.Find(unit.GetRef(3));
+            if (measure is null) return null;
+            if (!double.TryParse(ExtractNominalValue(measure.GetRaw(0)), NumberStyles.Float, CultureInfo.InvariantCulture, out double value)) return null;
+            return value * ParseUnitFactor(step, step.Find(measure.GetRef(1)), depth + 1);
+        }
+
+        return null;
+    }
+
+    private static IfcLengthUnit? ToLengthUnit(double metresPerUnit)
+    {
+        foreach (var unit in new[] { IfcLengthUnit.Millimetre, IfcLengthUnit.Metre, IfcLengthUnit.Foot, IfcLengthUnit.Inch })
+        {
+            if (Math.Abs(metresPerUnit - unit.MetresPerUnit()) <= 1e-9 * unit.MetresPerUnit()) return unit;
+        }
+        return null;
+    }
+
     private static IfcMesh? ParseMeshEntity(StepFile step, StepEntity itemEnt, string meshName = "Mesh")
     {
-        // IFCFACETEDBREP
-        if (itemEnt.Type.Equals("IFCFACETEDBREP", StringComparison.OrdinalIgnoreCase))
+        // IFCFACETEDBREP (one closed shell), IFCFACEBASEDSURFACEMODEL (connected face sets), IFCSHELLBASEDSURFACEMODEL (shells)
+        bool isBrep = itemEnt.Type.Equals("IFCFACETEDBREP", StringComparison.OrdinalIgnoreCase);
+        if (isBrep ||
+            itemEnt.Type.Equals("IFCFACEBASEDSURFACEMODEL", StringComparison.OrdinalIgnoreCase) ||
+            itemEnt.Type.Equals("IFCSHELLBASEDSURFACEMODEL", StringComparison.OrdinalIgnoreCase))
         {
-            int? shellId = itemEnt.GetRef(0);
-            var shellEnt = step.Find(shellId);
-            if (shellEnt is null) return null;
+            var shellIds = isBrep && itemEnt.GetRef(0) is int shellId ? [shellId] : itemEnt.GetRefList(0);
 
             var vertices = new List<IfcVector3>();
             var indices = new List<int>();
             var pointIndexMap = new Dictionary<int, int>();
 
-            var faceIds = shellEnt.GetRefList(0);
+            var faceIds = shellIds.SelectMany(id => step.Find(id)?.GetRefList(0) ?? []);
             foreach (int faceId in faceIds)
             {
                 var faceEnt = step.Find(faceId);
@@ -3003,33 +3390,20 @@ public sealed class IfcModel
             var firstEnt = step.Find(firstOpId.Value);
             if (firstEnt is not null)
             {
-                if (firstEnt.Type.Equals("IFCEXTRUDEDAREASOLID", StringComparison.OrdinalIgnoreCase))
+                var sweptMesh = ParseSweptSolid(step, firstEnt, "BooleanOperand", out var extruded, out var revolved, out bool fullPlacement);
+                if (sweptMesh is null)
                 {
-                    int? profId = firstEnt.GetRef(0);
-                    var prof = ParseProfile(step, profId);
-                    if (prof is not null)
-                    {
-                        var pos = ParsePlacement3D(step, firstEnt.GetRef(1));
-                        var dir = ParseDirection(step, firstEnt.GetRef(2));
-                        double depth = firstEnt.GetReal(3) ?? 0.0;
-                        boolResult.FirstSolid = new IfcExtrudedAreaSolid(prof, depth, pos, dir);
-                    }
+                    boolResult.FirstMesh = ParseMeshEntity(step, firstEnt);
                 }
-                else if (firstEnt.Type.Equals("IFCREVOLVEDAREASOLID", StringComparison.OrdinalIgnoreCase))
+                else if (fullPlacement)
                 {
-                    int? profId = firstEnt.GetRef(0);
-                    var prof = ParseProfile(step, profId);
-                    if (prof is not null)
-                    {
-                        var pos = ParsePlacement3D(step, firstEnt.GetRef(1));
-                        var axis = ParseAxis1Placement(step, firstEnt.GetRef(2));
-                        double angle = firstEnt.GetReal(3) ?? (2.0 * Math.PI);
-                        boolResult.FirstRevolved = new IfcRevolvedAreaSolid(prof, angle, pos, axis);
-                    }
+                    // The parametric operand cannot hold a rotated Position: keep the placed mesh (also written back as such).
+                    boolResult.FirstMesh = sweptMesh;
                 }
                 else
                 {
-                    boolResult.FirstMesh = ParseMeshEntity(step, firstEnt);
+                    boolResult.FirstSolid = extruded;
+                    boolResult.FirstRevolved = revolved;
                 }
             }
         }
@@ -3173,7 +3547,7 @@ public sealed class IfcModel
         int? locId = ent.GetRef(0);
         int? dirId = ent.GetRef(1);
 
-        var loc = ParsePlacement3D(step, locId);
+        var loc = ParseCoordinates(step.Find(locId));
         var dir = ParseDirection(step, dirId);
         return new IfcAxis1Placement(loc, dir);
     }
@@ -3295,7 +3669,20 @@ public sealed class IfcModel
             || type.StartsWith("IFCFURNISHINGELEMENT", StringComparison.OrdinalIgnoreCase)
             || type.StartsWith("IFCOPENINGELEMENT", StringComparison.OrdinalIgnoreCase)
             || type.Equals("IFCSPACE", StringComparison.OrdinalIgnoreCase)
-            || type.Equals("IFCBUILDINGELEMENTPROXY", StringComparison.OrdinalIgnoreCase);
+            || type.Equals("IFCBUILDINGELEMENTPROXY", StringComparison.OrdinalIgnoreCase)
+            // MEP distribution elements: IFC2x3 generic flow classes and IFC4 fittings
+            || type.Equals("IFCFLOWSEGMENT", StringComparison.OrdinalIgnoreCase)
+            || type.Equals("IFCFLOWFITTING", StringComparison.OrdinalIgnoreCase)
+            || type.Equals("IFCFLOWTERMINAL", StringComparison.OrdinalIgnoreCase)
+            || type.Equals("IFCFLOWCONTROLLER", StringComparison.OrdinalIgnoreCase)
+            || type.Equals("IFCFLOWMOVINGDEVICE", StringComparison.OrdinalIgnoreCase)
+            || type.Equals("IFCFLOWSTORAGEDEVICE", StringComparison.OrdinalIgnoreCase)
+            || type.Equals("IFCFLOWTREATMENTDEVICE", StringComparison.OrdinalIgnoreCase)
+            || type.Equals("IFCENERGYCONVERSIONDEVICE", StringComparison.OrdinalIgnoreCase)
+            || type.Equals("IFCDISTRIBUTIONCHAMBERELEMENT", StringComparison.OrdinalIgnoreCase)
+            || type.Equals("IFCDISTRIBUTIONCONTROLELEMENT", StringComparison.OrdinalIgnoreCase)
+            || type.Equals("IFCPIPEFITTING", StringComparison.OrdinalIgnoreCase)
+            || type.Equals("IFCDUCTFITTING", StringComparison.OrdinalIgnoreCase);
     }
 
     private static int WriteMeshTriangulatedFaceSet(StepWriter w, IReadOnlyList<IfcVector3> vertices, IReadOnlyList<int> indices)

@@ -401,8 +401,10 @@ public class IfcSceneReaderTests
         string path = Environment.GetEnvironmentVariable(IfcFileFactAttribute.Variable)!;
         var model = IfcModel.Open(path);
 
-        var result = Valid(IfcSceneReader.Read(path));
+        var result = IfcSceneReader.Read(path);
 
+        // A real file may draw warnings (for example a malformed GlobalId), but never errors.
+        Assert.DoesNotContain(result.Document.Validate(), d => d.Severity == SceneSeverity.Error);
         Assert.Equal(
             model.AllElements.Count(e => !Regex.IsMatch(e.IfcType, "(TYPE|STYLE|PROPERTIES)$", RegexOptions.IgnoreCase)),
             result.ElementCount);
@@ -411,11 +413,10 @@ public class IfcSceneReaderTests
         Assert.NotEmpty(SceneJson.Write(result.Document));
     }
 
-    // Every converted fixture must have no Validate() errors. Warnings are allowed: the made-up GlobalIds of
-    // placement.ifc start with 4 to D and draw ifc-guid warnings.
+    // Every converted fixture must pass Validate() without errors or warnings.
     private static IfcSceneResult Valid(IfcSceneResult result)
     {
-        Assert.DoesNotContain(result.Document.Validate(), d => d.Severity == SceneSeverity.Error);
+        Assert.Empty(result.Document.Validate());
         return result;
     }
 

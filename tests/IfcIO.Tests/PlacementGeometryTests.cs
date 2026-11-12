@@ -30,7 +30,7 @@ public class PlacementGeometryTests
     // Panel: triangle (0,0,0),(1,0,0),(0,1,0) at (10,20,0) in the storey (IfcFaceBasedSurfaceModel).
     // Pipe: 20x10 rectangle (profile rotated 90 degrees) extruded 1000 along the element X axis.
     // Fittings: one representation map (origin (0,0,100), triangle (0,0,0),(10,0,0),(0,10,0)) used three times;
-    // Fitting C mirrors it in X (Axis1 = -X with Axis2 omitted). Beam: an extrusion along world X inside a clipping result.
+    // Fitting C mirrors it in X (Axis1 = -X with Axis2 omitted); Fitting D has only Axis3 = +X, so X defaults to +Y. Beam: an extrusion along world X inside a clipping result.
     private static string BuildIfc(string lengthUnit, string wcsOrigin = "0.,0.,0.") => $"""
         ISO-10303-21;
         HEADER;
@@ -120,6 +120,11 @@ public class PlacementGeometryTests
         #345=IFCSHAPEREPRESENTATION(#23,'Body','MappedRepresentation',(#346));
         #346=IFCMAPPEDITEM(#300,#347);
         #347=IFCCARTESIANTRANSFORMATIONOPERATOR3D(#34,$,#204,$,$);
+        #350=IFCFLOWFITTING('DYvctVUKr0kugbFTf53O9L',$,'Fitting D',$,$,#321,#353,$);
+        #353=IFCPRODUCTDEFINITIONSHAPE($,$,(#355));
+        #355=IFCSHAPEREPRESENTATION(#23,'Body','MappedRepresentation',(#356));
+        #356=IFCMAPPEDITEM(#300,#357);
+        #357=IFCCARTESIANTRANSFORMATIONOPERATOR3D($,$,#204,$,#32);
         #600=IFCBEAM('CYvctVUKr0kugbFTf53O9L',$,'Beam',$,$,#321,#603,$);
         #603=IFCPRODUCTDEFINITIONSHAPE($,$,(#605));
         #605=IFCSHAPEREPRESENTATION(#23,'Body','Clipping',(#606));
@@ -136,7 +141,7 @@ public class PlacementGeometryTests
         #402=IFCAXIS2PLACEMENT3D(#403,#32,$);
         #403=IFCCARTESIANPOINT((1000.,0.,0.));
         #410=IFCRELCONNECTSPORTTOELEMENT('9YvctVUKr0kugbFTf53O9L',$,$,$,#400,#200);
-        #500=IFCRELCONTAINEDINSPATIALSTRUCTURE('AYvctVUKr0kugbFTf53O9L',$,$,$,(#100,#200,#320,#330,#340,#600),#60);
+        #500=IFCRELCONTAINEDINSPATIALSTRUCTURE('AYvctVUKr0kugbFTf53O9L',$,$,$,(#100,#200,#320,#330,#340,#350,#600),#60);
         ENDSEC;
         END-ISO-10303-21;
         """;
@@ -215,6 +220,34 @@ public class PlacementGeometryTests
         Assert.NotNull(fittingB.Mesh);
         AssertPoints(FittingAWorld, fittingA.Mesh.Vertices);
         AssertPoints(FittingBWorld, fittingB.Mesh.Vertices);
+    }
+
+    [Fact]
+    public void Open_MappedItemWithAxis3AlongX_DefaultsXAxisToY()
+    {
+        var model = Open(BuildIfc(Millimetre));
+
+        // IfcFirstProjAxis: with Z = (1,0,0) the defaulted X axis is (0,1,0), so Y = Z x X = (0,0,1).
+        var fitting = Element(model, "Fitting D");
+        Assert.NotNull(fitting.Mesh);
+        AssertPoints([new(100, 0, 0), new(100, 10, 0), new(100, 0, 10)], fitting.Mesh.Vertices);
+        Assert.Equal([0, 1, 2], fitting.Mesh.Indices);
+    }
+
+    [Fact]
+    public void Open_UnitWithoutEnumValue_DropsParametricSolidsAndSavesRoundTrip()
+    {
+        var model = Open(BuildIfc(Centimetre));
+        var pipe = Element(model, "Pipe");
+        Assert.Null(pipe.Solid);
+        var box = pipe.Mesh!.BoundingBox;
+
+        var reopened = Open(model.ToStepString());
+
+        Assert.Equal(IfcLengthUnit.Metre, reopened.LengthUnit);
+        var reopenedBox = Element(reopened, "Pipe").Mesh!.BoundingBox;
+        AssertPoints([box.Min, box.Max], [reopenedBox.Min, reopenedBox.Max], 1e-6);
+        AssertPoints([new(10.95, 20, 29.9), new(11.05, 30, 30.1)], [box.Min, box.Max], 1e-9);
     }
 
     [Fact]

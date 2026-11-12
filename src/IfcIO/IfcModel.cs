@@ -1823,7 +1823,8 @@ public sealed class IfcModel
         var geometry = new GeometryReadContext(
             step,
             geomToMaterialMap,
-            IfcTransform.Scale(geometryScale).Multiply(ParseWorldCoordinateSystem(step)));
+            IfcTransform.Scale(geometryScale).Multiply(ParseWorldCoordinateSystem(step)),
+            keepParametric: geometryScale == 1.0);
         var defaultStorey = model.Storeys[0];
         var allElementsMap = new Dictionary<int, IfcElement>();
 
@@ -2780,13 +2781,16 @@ public sealed class IfcModel
     }
 
     /// <summary>State shared while reading product geometry: caches for placements and mapped representations.</summary>
-    private sealed class GeometryReadContext(StepFile step, Dictionary<int, IfcMaterial> geomToMaterialMap, IfcTransform root)
+    private sealed class GeometryReadContext(StepFile step, Dictionary<int, IfcMaterial> geomToMaterialMap, IfcTransform root, bool keepParametric)
     {
         public StepFile Step { get; } = step;
         public Dictionary<int, IfcMaterial> GeomToMaterialMap { get; } = geomToMaterialMap;
 
         /// <summary>Unit scale applied after the world coordinate system of the model context.</summary>
         public IfcTransform Root { get; } = root;
+
+        /// <summary>False when geometry is rescaled to metres: parametric solids stay in file units and would disagree with LengthUnit.</summary>
+        public bool KeepParametric { get; } = keepParametric;
         public Dictionary<int, IfcTransform> Placements { get; } = [];
         public Dictionary<int, (IfcMesh? Mesh, IfcMaterial? Material)> MappedRepresentations { get; } = [];
         public HashSet<int> MapsInProgress { get; } = [];
@@ -2853,7 +2857,7 @@ public sealed class IfcModel
             if (mesh is null) continue;
 
             material = repMaterial;
-            if (parametric is { } body)
+            if (parametric is { } body && ctx.KeepParametric)
             {
                 solid = body.Solid;
                 revolvedSolid = body.Revolved;
@@ -3152,7 +3156,9 @@ public sealed class IfcModel
     /// <summary>IFC IfcFirstProjAxis: the reference direction projected onto the plane normal to <paramref name="z"/>.</summary>
     private static IfcVector3 FirstProjAxis(IfcVector3 z, IfcVector3? reference)
     {
-        foreach (var candidate in new[] { reference ?? IfcVector3.UnitX, IfcVector3.UnitX, IfcVector3.UnitZ })
+        // Defaulted reference: (1,0,0), or (0,1,0) when Z is (1,0,0). A reference parallel to Z is invalid: use the default.
+        var defaultReference = (z - IfcVector3.UnitX).Length < 1e-9 ? IfcVector3.UnitY : IfcVector3.UnitX;
+        foreach (var candidate in new[] { reference ?? defaultReference, defaultReference, IfcVector3.UnitY })
         {
             var x = (candidate - (z * IfcVector3.Dot(candidate, z))).Normalized();
             if (x != IfcVector3.Zero) return x;

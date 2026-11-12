@@ -20,7 +20,7 @@ All notable changes to the `IfcIO` library are documented in this file.
 - OBJ export is unchanged: model length units, Z up, now with world-placed geometry.
 - `IfcElement.Solid`, `RevolvedSolid` and `BooleanResult` of read elements still describe the first body item in its own coordinates (only the `Mesh` is world-placed). Writing a read model back therefore still places those solids without the element placement, as before.
 - Malformed placement data (a `PlacementRelTo` cycle, an `IfcMappedItem` cycle or mapping nested deeper than 64 levels) makes `IfcModel.Open` throw `InvalidDataException`. So does geometry that expands to more than 1,000,000 + 256 vertices per STEP entity, which guards against nested `IfcMappedItem` amplification.
-- For length units without an `IfcLengthUnit` value, only geometry and storey elevations are converted to metres; quantities and property values stay in file units.
+- For length units without an `IfcLengthUnit` value, only geometry and storey elevations are converted to metres; quantities and property values stay in file units. Such elements get no `Solid` / `RevolvedSolid` / `BooleanResult` (those would stay in file units), so saving writes the metre `Mesh`.
 
 ## [0.10.0] - 2026-11-11
 

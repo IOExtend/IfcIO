@@ -248,6 +248,59 @@ public class PlacementGeometryTests
     }
 
     [Fact]
+    public void Open_NestedMappedItemAmplification_ThrowsInsteadOfExhaustingMemory()
+    {
+        // 8 levels of representation maps, each holding 10 instances of the previous one: 3 * 10^8 vertices if expanded.
+        var data = new StringBuilder("""
+            #1=IFCPROJECT('0YvctVUKr0kugbFTf53O9L',$,'Bomb',$,$,$,$,$,#10);
+            #10=IFCUNITASSIGNMENT((#11));
+            #11=IFCSIUNIT(*,.LENGTHUNIT.,.MILLI.,.METRE.);
+            #20=IFCAXIS2PLACEMENT3D(#21,$,$);
+            #21=IFCCARTESIANPOINT((0.,0.,0.));
+            #22=IFCCARTESIANTRANSFORMATIONOPERATOR3D($,$,#21,$,$);
+            #30=IFCCARTESIANPOINT((1.,0.,0.));
+            #31=IFCCARTESIANPOINT((0.,1.,0.));
+            #32=IFCPOLYLOOP((#21,#30,#31));
+            #33=IFCFACEOUTERBOUND(#32,.T.);
+            #34=IFCFACE((#33));
+            #35=IFCCLOSEDSHELL((#34));
+            #36=IFCFACETEDBREP(#35);
+            #100=IFCSHAPEREPRESENTATION($,'Body','Brep',(#36));
+            #101=IFCREPRESENTATIONMAP(#20,#100);
+
+            """);
+        for (int level = 1; level <= 8; level++)
+        {
+            int rep = 100 + (level * 100);
+            var items = Enumerable.Range(1, 10).Select(i => $"#{rep + 1 + i}").ToList();
+            foreach (var item in items)
+            {
+                data.AppendLine(CultureInfo.InvariantCulture, $"{item}=IFCMAPPEDITEM(#{rep - 99},#22);");
+            }
+            data.AppendLine(CultureInfo.InvariantCulture, $"#{rep}=IFCSHAPEREPRESENTATION($,'Body','MappedRepresentation',({string.Join(",", items)}));");
+            data.AppendLine(CultureInfo.InvariantCulture, $"#{rep + 1}=IFCREPRESENTATIONMAP(#20,#{rep});");
+        }
+        data.AppendLine("#2000=IFCMAPPEDITEM(#901,#22);");
+        data.AppendLine("#2001=IFCSHAPEREPRESENTATION($,'Body','MappedRepresentation',(#2000));");
+        data.AppendLine("#2002=IFCPRODUCTDEFINITIONSHAPE($,$,(#2001));");
+        data.AppendLine("#2003=IFCBUILDINGELEMENTPROXY('1YvctVUKr0kugbFTf53O9L',$,'Bomb',$,$,$,#2002,$,$);");
+        string ifc = $"""
+            ISO-10303-21;
+            HEADER;
+            FILE_DESCRIPTION((''),'2;1');
+            FILE_NAME('bomb.ifc','2026-01-01T00:00:00',(''),(''),'','','');
+            FILE_SCHEMA(('IFC2X3'));
+            ENDSEC;
+            DATA;
+            {data}ENDSEC;
+            END-ISO-10303-21;
+            """;
+
+        var ex = Assert.Throws<InvalidDataException>(() => Open(ifc));
+        Assert.Contains("vertices", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Open_DistributionPort_UsesWorldPlacement()
     {
         var model = Open(BuildIfc(Millimetre));

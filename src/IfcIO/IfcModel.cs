@@ -2790,9 +2790,29 @@ public sealed class IfcModel
         public Dictionary<int, IfcTransform> Placements { get; } = [];
         public Dictionary<int, (IfcMesh? Mesh, IfcMaterial? Material)> MappedRepresentations { get; } = [];
         public HashSet<int> MapsInProgress { get; } = [];
+
+        /// <summary>
+        /// Cap on vertices materialised while reading, linear in the file size: nested IfcMappedItems can
+        /// otherwise multiply a small file into exponentially many vertices.
+        /// </summary>
+        public long VertexBudget { get; } = MinVertexBudget + (VerticesPerEntity * (long)step.Entities.Count);
+
+        private long _materialisedVertices;
+
+        public void ChargeVertices(int count)
+        {
+            _materialisedVertices += count;
+            if (_materialisedVertices > VertexBudget)
+            {
+                throw new InvalidDataException(
+                    $"IFC geometry expands to more than {VertexBudget} vertices (limit for {Step.Entities.Count} entities); check for nested IfcMappedItem amplification.");
+            }
+        }
     }
 
     private const int MaxMappingDepth = 64;
+    private const long MinVertexBudget = 1_000_000;
+    private const long VerticesPerEntity = 256;
 
     /// <summary>Parametric form of the first body item, in the item's own coordinates.</summary>
     private readonly record struct ParametricBody(IfcExtrudedAreaSolid? Solid, IfcRevolvedAreaSolid? Revolved, IfcBooleanResult? Boolean);
@@ -2872,6 +2892,7 @@ public sealed class IfcModel
 
             var mesh = ParseRepresentationItem(ctx, itemEnt, meshName, ref material, out var itemParametric);
             if (mesh is null) continue;
+            ctx.ChargeVertices(mesh.Vertices.Count);
             if (parts.Count == 0) parametric = itemParametric;
             parts.Add(mesh);
         }

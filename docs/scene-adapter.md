@@ -29,7 +29,7 @@ SceneJson.Save(result.Document, "house.ioscene.json");
 
 `IfcSceneReader.Read(path, options)` opens `.ifc` and `.ifczip` files with `IfcModel.Open`. A model already in memory
 is converted with `IfcSceneReader.Read(model, options)`; it has no file name, so `IfcSceneOptions.ModelKey` is
-required. `IfcSceneOptions.IncludeSpaces` also converts spaces (off by default, because closed room volumes hide the
+required. An empty `ModelKey` throws `ArgumentException` in both methods. `IfcSceneOptions.IncludeSpaces` also converts spaces (off by default, because closed room volumes hide the
 elements inside them).
 
 `IfcSceneResult` holds the `Document`, the `Diagnostics` of the conversion, the model's `LengthUnit` and the exact

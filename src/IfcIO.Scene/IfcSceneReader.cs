@@ -48,11 +48,17 @@ public static class IfcSceneReader
     /// <param name="path">The IFC file.</param>
     /// <param name="options">Conversion options; null uses the defaults.</param>
     /// <returns>The scene with a report of the conversion.</returns>
-    /// <exception cref="ArgumentException">Two converted elements have the same <see cref="IfcElement.Id"/>.</exception>
+    /// <exception cref="ArgumentException">
+    /// <see cref="IfcSceneOptions.ModelKey"/> is empty, or two converted elements have the same <see cref="IfcElement.Id"/>.
+    /// </exception>
     public static IfcSceneResult Read(string path, IfcSceneOptions? options = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(path);
         options ??= new IfcSceneOptions();
+        if (options.ModelKey is "")
+        {
+            throw new ArgumentException("IfcSceneOptions.ModelKey must not be empty; leave it null to use the file name.", nameof(options));
+        }
         return Convert(IfcModel.Open(path), options.ModelKey ?? Path.GetFileName(path), path, options);
     }
 

@@ -126,6 +126,18 @@ public class IfcSceneReaderTests
         Assert.Contains("ModelKey", ex.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Read_EmptyModelKey_Throws()
+    {
+        var empty = new IfcSceneOptions { ModelKey = "" };
+
+        var fromFile = Assert.Throws<ArgumentException>(() => IfcSceneReader.Read(FixturePath("placement.ifc"), empty));
+        var fromModel = Assert.Throws<ArgumentException>(() => IfcSceneReader.Read(IfcModel.Create("Empty key"), empty));
+
+        Assert.Contains("ModelKey", fromFile.Message, StringComparison.Ordinal);
+        Assert.Contains("ModelKey", fromModel.Message, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData(Millimetre, IfcLengthUnit.Millimetre, 0.001)]
     [InlineData(Foot, IfcLengthUnit.Foot, 0.3048)]

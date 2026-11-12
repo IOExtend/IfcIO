@@ -1,0 +1,11 @@
+# Golden identity of IfcIO.Scene for placement.ifc: the SceneModel.Key, then the SourceId of every scene element in
+# document order. Changing what IfcIO.Scene writes here is a breaking release of IfcIO.Scene.
+key placement.ifc
+4YvctVUKr0kugbFTf53O9L
+1YvctVUKr0kugbFTf53O9L
+5YvctVUKr0kugbFTf53O9L
+6YvctVUKr0kugbFTf53O9L
+7YvctVUKr0kugbFTf53O9L
+BYvctVUKr0kugbFTf53O9L
+DYvctVUKr0kugbFTf53O9L
+CYvctVUKr0kugbFTf53O9L

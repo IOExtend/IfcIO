@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Not packed until IOScene 0.1.0 is released: nothing built on a preview contract reaches nuget.org. -->
+    <IsPackable>false</IsPackable>
+    <Description>Converts IFC models read by IfcIO into IOScene documents in metres with Z up, keeping GlobalIds, storeys, property sets, quantities and 4D schedules.</Description>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- IOScene is referenced by a range whose upper bound is a prerelease ([0.N.0, 0.N+1.0-0)); NU5104 is expected. -->
+    <NoWarn>$(NoWarn);NU5104</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\IfcIO\IfcIO.csproj" />
+    <PackageReference Include="IOScene" />
+  </ItemGroup>
+
+</Project>

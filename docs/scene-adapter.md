@@ -11,7 +11,7 @@ that read scenes work from it. The scene model and its rules are specified in th
 its [key registry](https://github.com/IOExtend/IOScene/blob/main/docs/keys.md).
 
 Status: preview. The project is built and tested with IfcIO but not published to NuGet until `IOScene` 0.1.0 is
-released. It references `IOScene` with the range `[0.1.0-preview.1, 0.2.0-0)`.
+released. It references `IOScene` with the range `[0.1.0-preview.2, 0.2.0-0)`.
 
 ## Usage
 
@@ -42,9 +42,10 @@ elements inside them).
 | the file | one `SceneModel`: `Key` = `ModelKey`, else the file name without directory (`house.ifc`); `SourceFormat` `ifc`; `SourceLengthUnit` `mm`, `m`, `ft` or `in`; `Producer` `IfcIO.Scene <version>` |
 | storey | a `SceneLevel` (elevation in metres) and a tree node of kind `Level` with the storey's GlobalId |
 | element (`IfcModel.AllElements`) | a `SceneElement` of kind `Element`, child of its storey node: `Id` = STEP id, `SourceId` = `IfcGuid` = GlobalId, `Category` = IFC class in upper case, `TypeName` = type product name |
-| property set, quantity set | a `ScenePropertySet` with key `ifc:<SetName>`, properties `ifc:<SetName>.<Name>`; a set shared by elements in the file is one scene set |
+| property set, quantity set | a `ScenePropertySet` with key `ifc:<SetName>`, properties `ifc:<SetName>.<Name>`; a set shared by elements in the file is one scene set. `PropertySetIds` lists the element's property sets, then its quantity sets |
 | property value | `Text`, as IfcIO reads it |
-| quantity value | `Number` with `Unit` null: the value is in the file's units, not converted |
+| count quantity | `Number` with `Unit` null (dimensionless) |
+| length, area, volume, weight quantity | `Text` only: the number as IfcIO reads it, in the file's units, not converted |
 | element mesh | one `SceneGeometry` (triangles, metres, world coordinates) placed once by a `SceneInstance` without transform |
 | surface style colour | a `SceneMaterial` (alpha is the opacity); elements without one get a colour for their IFC class on the instance |
 | work schedule | a `SceneSchedule` per work schedule with tasks; task `Id` = task GlobalId, elements by scene id |
@@ -52,6 +53,27 @@ elements inside them).
 `(SceneModel.Key, SourceId)` is the identity that may be stored outside the scene. How this adapter derives both is
 frozen and covered by a golden identity test (`tests/IfcIO.Scene.Tests/Fixtures/placement.identity.txt`); changing it
 is a breaking release.
+
+### Values
+
+When a `SceneValue` has a `Number`, its `Unit` is authoritative and a null `Unit` means dimensionless. The adapter
+converts no property or quantity value to SI, so it writes a number only when the value is dimensionless:
+
+- A count quantity (`IfcQuantityCount`) is `Number` with `Unit` null; `Text` is the same number.
+- Length, area, volume and weight quantities are in the file's units, which IfcIO does not report for quantities, so
+  they are `Kind = Text` with the number only in `Text` (invariant culture, as IfcIO reads it). IfcIO does not read
+  time quantities.
+- Property values are `Text` as IfcIO reads them. IfcIO keeps a value read from a file as text without its measure
+  type (`IfcLengthMeasure`, `IfcInteger`, ...), so the adapter cannot tell a dimensionless value from a dimensioned
+  one and does not type it.
+
+The value form written under each key (`Text`, `Kind`, `Unit`) is frozen with the key format.
+
+### Coordinates
+
+Vertices are in world coordinates, in metres, and every instance has no transform, which the contract allows. A file
+placed far from the origin (for example at map coordinates) therefore gives large vertex coordinates; a consumer
+rebases them, for example on `ComputeBounds().Center`, before narrowing them to float32.
 
 ## Limits
 
@@ -65,10 +87,12 @@ is a breaking release.
   or building, and spaces aggregated to a storey (`IfcRelAggregates`), are in the first storey. A file without storeys
   gets IfcIO's default storey `Level 1`, which has no GlobalId. Site, building and project are not tree nodes.
 - IfcIO lists type objects (`IfcWallType`, `IfcDoorStyle`) and door and window lining and panel properties among the
-  elements; the adapter skips them. Type property sets are not converted.
+  elements; the adapter skips them. Type property sets are not read yet; when they are, they will use the same
+  `ifc:` keys and come after the occurrence sets in `PropertySetIds`, so a lookup by key finds the occurrence value
+  first.
 - Property values are text even when the IFC value is a number or a boolean: IfcIO keeps only the text.
-- Quantities are numbers without a unit. For a file whose length unit IfcIO converts to metres while reading (for
-  example centimetres), geometry is in metres but quantities stay in file units.
+- Length, area, volume and weight quantities are text in file units. For a file whose length unit IfcIO converts to
+  metres while reading (for example centimetres), geometry is in metres but quantities stay in file units.
 - An element without a GlobalId in the file gets a new random GlobalId from IfcIO each time it is read, so its
   `SourceId` is not stable.
 - Transparency is not read from files by IfcIO; materials built in memory keep their alpha.

@@ -32,8 +32,12 @@ namespace IfcIO.Scene;
 /// <para>
 /// Property sets and quantity sets become property sets keyed <c>ifc:&lt;SetName&gt;</c>, their properties
 /// <c>ifc:&lt;SetName&gt;.&lt;Name&gt;</c>; a set that IfcIO shares between elements is one set in the scene.
-/// Property values are text as IfcIO reads them. Quantity values are numbers in the file's units, so their
-/// <see cref="SceneValue.Unit"/> is null. Colour and transparency come from <see cref="IfcElement.Material"/>;
+/// Occurrence sets come first in <see cref="SceneElement.PropertySetIds"/>, property sets before quantity sets; type
+/// property sets are not read. A number is written only when it is dimensionless, since a null
+/// <see cref="SceneValue.Unit"/> means dimensionless and the adapter converts no value to SI. Property values are text
+/// as IfcIO reads them, because IfcIO does not report the measure of a value read from a file. A count quantity is a
+/// number with a null unit; length, area, volume and weight quantities are in the file's units, so they are text with
+/// the number as IfcIO reads it. Colour and transparency come from <see cref="IfcElement.Material"/>;
 /// elements without one get a colour for their IFC class. Work schedules become schedules. Openings are not converted.
 /// </para>
 /// </remarks>
@@ -211,7 +215,7 @@ public static class IfcSceneReader
         foreach (var qset in element.QuantitySets)
         {
             sceneElement.PropertySetIds.Add(SetId(doc, sets, qset, qset.Name,
-                qset.Quantities.Select(q => (q.Name, QuantityValue(q.Value)))));
+                qset.Quantities.Select(q => (q.Name, QuantityValue(q)))));
         }
         doc.Elements.Add(sceneElement);
 
@@ -246,11 +250,13 @@ public static class IfcSceneReader
     private static SceneDiagnostic Issue(SceneSeverity severity, string code, string reason, IfcElement element) =>
         new(severity, code, $"{reason}; element #{element.Id} '{element.Name}' ({element.IfcType}) has no geometry in the scene.", element.GlobalId);
 
-    // Quantities are doubles in IfcIO, in the file's units (not always IfcModel.LengthUnit), so they carry no unit.
-    private static SceneValue QuantityValue(double value)
+    // Quantities are doubles in IfcIO, in the file's units (not always IfcModel.LengthUnit), which IfcIO does not report.
+    // A number with a null Unit means dimensionless, so only a count is a number; every other quantity is text.
+    private static SceneValue QuantityValue(IfcPhysicalQuantity quantity)
     {
+        double value = quantity.Value;
         string text = value.ToString(CultureInfo.InvariantCulture);
-        return double.IsFinite(value) ? SceneValue.FromNumber(value, null, text) : SceneValue.FromText(text);
+        return quantity is IfcQuantityCount && double.IsFinite(value) ? SceneValue.FromNumber(value, null, text) : SceneValue.FromText(text);
     }
 
     private static int SetId(

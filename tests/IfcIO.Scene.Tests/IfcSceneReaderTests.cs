@@ -233,7 +233,12 @@ public class IfcSceneReaderTests
         var storey = model.AddStorey("Level 2", 3000);
         var wall = model.AddMesh("Wall", Mm(Triangle), [0, 1, 2], new IfcMaterial { Name = "Brick", R = 1, G = 0.5, B = 0 }, storey, "IFCWALL");
         wall.GetOrCreatePropertySet("Pset_WallCommon").Add("FireRating", "EI 60");
-        wall.GetOrCreateQuantitySet("Qto_WallBaseQuantities").AddLength("Length", 3000.5);
+        var quantities = wall.GetOrCreateQuantitySet("Qto_WallBaseQuantities");
+        quantities.AddLength("Length", 3000.5);
+        quantities.AddArea("NetSideArea", 9.25);
+        quantities.AddVolume("NetVolume", 2.5);
+        quantities.AddWeight("GrossWeight", 1200);
+        quantities.AddCount("Count", 4);
         model.AddElement(new IfcElement { Id = 2, Name = "Annotation" }, storey);
         var opened = SaveAndOpen(model);
         var openedWall = Assert.Single(opened.AllElements, e => e.Name == "Wall");
@@ -255,9 +260,17 @@ public class IfcSceneReaderTests
         Assert.Equal("FireRating", fireRating.Name);
         Assert.Equal("ifc:Pset_WallCommon.FireRating", fireRating.Key);
         Assert.Equal(SceneValue.FromText("EI 60"), fireRating.Value);
-        var length = Assert.Single(sets[1].Properties);
-        Assert.Equal("ifc:Qto_WallBaseQuantities.Length", length.Key);
-        Assert.Equal(SceneValue.FromNumber(3000.5, null, "3000.5"), length.Value);
+        // Dimensioned quantities are in file units, so only their text is written; a count is a dimensionless number.
+        Assert.Equal(
+            [
+                ("ifc:Qto_WallBaseQuantities.Length", SceneValue.FromText("3000.5")),
+                ("ifc:Qto_WallBaseQuantities.NetSideArea", SceneValue.FromText("9.25")),
+                ("ifc:Qto_WallBaseQuantities.NetVolume", SceneValue.FromText("2.5")),
+                ("ifc:Qto_WallBaseQuantities.GrossWeight", SceneValue.FromText("1200")),
+                ("ifc:Qto_WallBaseQuantities.Count", SceneValue.FromNumber(4, null, "4")),
+            ],
+            sets[1].Properties.Select(p => (p.Key!, p.Value)));
+        Assert.Null(sets[1].Properties[^1].Value.Unit);
 
         var brick = Assert.Single(doc.Materials);
         Assert.Equal("Brick", brick.Name);
@@ -415,8 +428,7 @@ public class IfcSceneReaderTests
 
         var result = IfcSceneReader.Read(path);
 
-        // A real file may draw warnings (for example a malformed GlobalId), but never errors.
-        Assert.DoesNotContain(result.Document.Validate(), d => d.Severity == SceneSeverity.Error);
+        Assert.Empty(result.Document.Validate());
         Assert.Equal(
             model.AllElements.Count(e => !Regex.IsMatch(e.IfcType, "(TYPE|STYLE|PROPERTIES)$", RegexOptions.IgnoreCase)),
             result.ElementCount);

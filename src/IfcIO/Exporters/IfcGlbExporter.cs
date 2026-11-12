@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using IfcIO.Geometry;
 using IfcIO.Model;
+using IfcIO.Schema;
 
 namespace IfcIO.Exporters;
 
@@ -69,18 +70,26 @@ public static class IfcGlbExporter
         }
 
         var rootChildNodeIndices = new List<int>();
+        double metresPerUnit = model.LengthUnit.MetresPerUnit();
 
-        foreach (var storey in model.Storeys)
+        var storeyMeshes = model.Storeys
+            .Select(storey => (Storey: storey, Items: storey.Elements
+                .Select(elem => (Element: elem, Mesh: elem.GetEffectiveMesh()))
+                .Where(item => item.Mesh is { Vertices.Count: > 0, Indices.Count: > 0 })
+                .Select(item => (item.Element, Mesh: item.Mesh!))
+                .ToList()))
+            .ToList();
+
+        // Vertices are stored relative to the model centre, which becomes the root node translation:
+        // float32 positions at georeferenced offsets lose millimetres (about 8 mm at 100 km).
+        var origin = ComputeCentre(storeyMeshes.SelectMany(s => s.Items).Select(item => item.Mesh));
+
+        foreach (var (storey, items) in storeyMeshes)
         {
             var storeyChildNodes = new List<int>();
 
-            foreach (var elem in storey.Elements)
+            foreach (var (elem, mesh) in items)
             {
-                var mesh = elem.GetEffectiveMesh();
-                if (mesh is null || mesh.Vertices.Count == 0 || mesh.Indices.Count == 0)
-                {
-                    continue;
-                }
 
                 int? matId = null;
                 if (elem.Material is not null)
@@ -104,7 +113,7 @@ public static class IfcGlbExporter
                     matId = existingMat;
                 }
 
-                int meshIndex = PackMesh(mesh, matId, binMs, bufferViews, accessors, gltfMeshes);
+                int meshIndex = PackMesh(mesh, origin, metresPerUnit, matId, binMs, bufferViews, accessors, gltfMeshes);
 
                 int elemNodeIndex = gltfNodes.Count;
                 gltfNodes.Add(new NodeDef
@@ -133,6 +142,7 @@ public static class IfcGlbExporter
         {
             Name = model.ProjectName,
             Children = rootChildNodeIndices,
+            Translation = origin == IfcVector3.Zero ? null : ToGltf(origin, metresPerUnit),
         });
 
         // Align BIN chunk to 4-byte boundary
@@ -165,6 +175,7 @@ public static class IfcGlbExporter
             {
                 var dict = new Dictionary<string, object> { ["name"] = n.Name };
                 if (n.Mesh.HasValue) dict["mesh"] = n.Mesh.Value;
+                if (n.Translation is not null) dict["translation"] = n.Translation;
                 if (n.Children is not null && n.Children.Count > 0) dict["children"] = n.Children;
                 return dict;
             }).ToArray(),
@@ -254,13 +265,20 @@ public static class IfcGlbExporter
 
     private static int PackMesh(
         IfcMesh mesh,
+        IfcVector3 origin,
+        double metresPerUnit,
         int? materialIndex,
         MemoryStream binMs,
         List<BufferViewDef> bufferViews,
         List<AccessorDef> accessors,
         List<MeshDef> gltfMeshes)
     {
-        var vertices = mesh.Vertices;
+        var vertices = new IfcVector3[mesh.Vertices.Count];
+        for (int v = 0; v < vertices.Length; v++)
+        {
+            var p = mesh.Vertices[v] - origin;
+            vertices[v] = new IfcVector3(p.X * metresPerUnit, p.Z * metresPerUnit, -p.Y * metresPerUnit);
+        }
         var indices = mesh.Indices;
 
         // 1. Pack Positions (VEC3 float)
@@ -270,7 +288,7 @@ public static class IfcGlbExporter
         float minX = float.MaxValue, minY = float.MaxValue, minZ = float.MaxValue;
         float maxX = float.MinValue, maxY = float.MinValue, maxZ = float.MinValue;
 
-        var normals = new IfcVector3[vertices.Count];
+        var normals = new IfcVector3[vertices.Length];
 
         // Precompute face normals
         for (int i = 0; i <= indices.Count - 3; i += 3)
@@ -278,7 +296,7 @@ public static class IfcGlbExporter
             int i0 = indices[i];
             int i1 = indices[i + 1];
             int i2 = indices[i + 2];
-            if (i0 < vertices.Count && i1 < vertices.Count && i2 < vertices.Count)
+            if (i0 < vertices.Length && i1 < vertices.Length && i2 < vertices.Length)
             {
                 var v0 = vertices[i0];
                 var v1 = vertices[i1];
@@ -291,7 +309,7 @@ public static class IfcGlbExporter
         }
 
         Span<byte> floatBytes = stackalloc byte[4];
-        for (int v = 0; v < vertices.Count; v++)
+        for (int v = 0; v < vertices.Length; v++)
         {
             var p = vertices[v];
             float px = (float)p.X;
@@ -320,7 +338,7 @@ public static class IfcGlbExporter
             BufferView = posBvIdx,
             ByteOffset = 0,
             ComponentType = ComponentTypeFloat,
-            Count = vertices.Count,
+            Count = vertices.Length,
             Type = "VEC3",
             Min = [minX, minY, minZ],
             Max = [maxX, maxY, maxZ]
@@ -330,7 +348,7 @@ public static class IfcGlbExporter
         AlignStream(binMs, 4);
         int normOffset = (int)binMs.Length;
 
-        for (int v = 0; v < vertices.Count; v++)
+        for (int v = 0; v < vertices.Length; v++)
         {
             var n = normals[v].Normalized();
             BinaryPrimitives.WriteSingleLittleEndian(floatBytes, (float)n.X);
@@ -351,14 +369,14 @@ public static class IfcGlbExporter
             BufferView = normBvIdx,
             ByteOffset = 0,
             ComponentType = ComponentTypeFloat,
-            Count = vertices.Count,
+            Count = vertices.Length,
             Type = "VEC3"
         });
 
         // 3. Pack Indices (uint16 or uint32)
         AlignStream(binMs, 4);
         int idxOffset = (int)binMs.Length;
-        bool useShort = vertices.Count < 65535;
+        bool useShort = vertices.Length < 65535;
 
         if (useShort)
         {
@@ -411,6 +429,26 @@ public static class IfcGlbExporter
         return meshIdx;
     }
 
+    /// <summary>IFC is Z-up in model length units; glTF is Y-up in metres: (x, y, z) -> (x, z, -y).</summary>
+    private static double[] ToGltf(IfcVector3 p, double metresPerUnit) =>
+        [p.X * metresPerUnit, p.Z * metresPerUnit, -p.Y * metresPerUnit];
+
+    /// <summary>Centre of the bounding box of all vertices, in model coordinates (zero when there are none).</summary>
+    private static IfcVector3 ComputeCentre(IEnumerable<IfcMesh> meshes)
+    {
+        var min = new IfcVector3(double.PositiveInfinity, double.PositiveInfinity, double.PositiveInfinity);
+        var max = new IfcVector3(double.NegativeInfinity, double.NegativeInfinity, double.NegativeInfinity);
+        foreach (var mesh in meshes)
+        {
+            foreach (var p in mesh.Vertices)
+            {
+                min = new IfcVector3(Math.Min(min.X, p.X), Math.Min(min.Y, p.Y), Math.Min(min.Z, p.Z));
+                max = new IfcVector3(Math.Max(max.X, p.X), Math.Max(max.Y, p.Y), Math.Max(max.Z, p.Z));
+            }
+        }
+        return min.X <= max.X ? (min + max) * 0.5 : IfcVector3.Zero;
+    }
+
     private static void AlignStream(MemoryStream ms, int alignment)
     {
         int rem = (int)(ms.Length % alignment);
@@ -458,6 +496,7 @@ public static class IfcGlbExporter
         public required string Name { get; init; }
         public int? Mesh { get; init; }
         public List<int>? Children { get; init; }
+        public double[]? Translation { get; init; }
     }
 
     private sealed class MaterialDef

@@ -50,8 +50,9 @@ elements inside them).
 | surface style colour | a `SceneMaterial` (alpha is the opacity); elements without one get a colour for their IFC class on the instance |
 | work schedule | a `SceneSchedule` per work schedule with tasks; task `Id` = task GlobalId, elements by scene id |
 
-`(SceneModel.Key, SourceId)` is the identity that may be stored outside the scene. How this adapter derives both is
-frozen and covered by a golden identity test (`tests/IfcIO.Scene.Tests/Fixtures/placement.identity.txt`); changing it
+`(SceneModel.Key, SourceId)` is the identity that may be stored outside the scene. How this adapter derives both, and
+`IfcGuid`, the `ifc:` key format and the value form (`Text`, `Kind`, `Unit`) it writes under each key, are frozen and
+covered by a golden identity test (`tests/IfcIO.Scene.Tests/Fixtures/placement.identity.txt`); changing any of them
 is a breaking release.
 
 ### Values

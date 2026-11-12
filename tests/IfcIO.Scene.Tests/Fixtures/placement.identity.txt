@@ -1,5 +1,6 @@
 # Golden identity of IfcIO.Scene for placement.ifc: the SceneModel.Key, then the SourceId of every scene element in
-# document order. Changing what IfcIO.Scene writes here is a breaking release of IfcIO.Scene.
+# document order (IfcGuid equals it), then every property set key with the key, Kind, Unit (- for none) and Text of
+# each value under it. Changing what IfcIO.Scene writes here is a breaking release of IfcIO.Scene.
 key placement.ifc
 04vctVUKr0kugbFTf53O9L
 01vctVUKr0kugbFTf53O9L
@@ -9,3 +10,9 @@ key placement.ifc
 0BvctVUKr0kugbFTf53O9L
 0DvctVUKr0kugbFTf53O9L
 0CvctVUKr0kugbFTf53O9L
+set ifc:Pset_BuildingElementProxyCommon
+value ifc:Pset_BuildingElementProxyCommon.Reference Text - P-1
+value ifc:Pset_BuildingElementProxyCommon.Width Text - 2500.
+set ifc:BaseQuantities
+value ifc:BaseQuantities.Length Text - 1500.5
+value ifc:BaseQuantities.Count Number - 4

@@ -94,10 +94,17 @@ public class IfcSceneReaderTests
         var expected = File.ReadAllLines(FixturePath("placement.identity.txt")).Where(l => !l.StartsWith('#')).ToList();
 
         var result = Valid(IfcSceneReader.Read(FixturePath("placement.ifc")));
+        var doc = result.Document;
+        bool IsSet(string line) => line.StartsWith("set ", StringComparison.Ordinal) || line.StartsWith("value ", StringComparison.Ordinal);
 
-        Assert.Equal(expected[0], "key " + Assert.Single(result.Document.Models).Key);
-        Assert.Equal(expected.Skip(1), result.Document.Elements.Select(e => e.SourceId));
-        Assert.All(result.Document.Elements, e => Assert.Equal(e.SourceId, e.IfcGuid));
+        Assert.Equal(expected[0], "key " + Assert.Single(doc.Models).Key);
+        Assert.Equal(expected.Skip(1).Where(l => !IsSet(l)), doc.Elements.Select(e => e.SourceId));
+        Assert.All(doc.Elements, e => Assert.Equal(e.SourceId, e.IfcGuid));
+        Assert.Equal(
+            expected.Where(IsSet),
+            doc.PropertySets.SelectMany(s => s.Properties
+                .Select(p => $"value {p.Key} {p.Value.Kind} {p.Value.Unit ?? "-"} {p.Value.Text}")
+                .Prepend("set " + s.Key)));
     }
 
     [Fact]

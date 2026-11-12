@@ -2,7 +2,8 @@
   "metadata": [
     {
       "src": [
-        { "src": "src/IfcIO", "files": ["IfcIO.csproj"] }
+        { "src": "src/IfcIO", "files": ["IfcIO.csproj"] },
+        { "src": "src/IfcIO.Scene", "files": ["IfcIO.Scene.csproj"] }
       ],
       "dest": "docs/api",
       "properties": { "TargetFramework": "net10.0" },

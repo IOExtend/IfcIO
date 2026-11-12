@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Converts IFC models read by IfcIO into IOScene documents in metres with Z up, keeping GlobalIds, storeys, property sets, quantities and 4D schedules.</Description>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- IOScene is referenced by a range whose upper bound is a prerelease ([0.N.0, 0.N+1.0-0)); NU5104 is expected. -->
+    <NoWarn>$(NoWarn);NU5104</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\IfcIO\IfcIO.csproj" />
+    <PackageReference Include="IOScene" />
+  </ItemGroup>
+
+  <!-- The shared pack metadata expects icon.png beside the project; the adapter ships the engine's icon. -->
+  <ItemGroup>
+    <None Remove="$(MSBuildProjectDirectory)/icon.png" />
+    <None Include="..\IfcIO\icon.png" Pack="true" PackagePath="/" Visible="false" />
+  </ItemGroup>
+
+  <!-- Adapter and engine ship on one tag, so the packed engine dependency is exact [X.Y.Z], not >=; a mix gives NU1608. -->
+  <Target Name="PinProjectReferencesExactly" AfterTargets="_GetProjectReferenceVersions">
+    <ItemGroup>
+      <_Pinned Include="@(_ProjectReferencesWithVersions)"><ProjectVersion>[%(_ProjectReferencesWithVersions.ProjectVersion)]</ProjectVersion></_Pinned>
+      <_ProjectReferencesWithVersions Remove="@(_ProjectReferencesWithVersions)" />
+      <_ProjectReferencesWithVersions Include="@(_Pinned)" />
+    </ItemGroup>
+  </Target>
+
+</Project>

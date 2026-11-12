@@ -17,6 +17,15 @@ Report security vulnerabilities privately through the **Security** tab.
 - Keep nullable reference types enabled.
 - Warnings are treated as errors.
 
+## Scene adapter
+
+`src/IfcIO.Scene` converts IfcIO models into `IOScene` documents and uses only the public API of `IfcIO`; the `IfcIO`
+package itself keeps no dependencies. `IOScene` is referenced with the range `[0.1.0-preview.2, 0.2.0-0)`. To build
+against an `IOScene` preview that is not on NuGet.org yet, restore from a local folder of packages:
+`dotnet build IfcIO.slnx -p:RestoreAdditionalProjectSources=<folder>`. Changing the `SceneModel.Key`, `SourceId` or
+`IfcGuid` the adapter writes, its `ifc:` key format, or the value form (`Text`, `Kind`, `Unit`) it writes under a key
+fails the golden identity test and is a breaking release.
+
 ## Releases & NuGet Publishing
 
 Push a tag matching the package version, such as `v0.1.0`, to trigger the `release.yml` workflow.

@@ -428,7 +428,8 @@ public class IfcSceneReaderTests
 
         var result = IfcSceneReader.Read(path);
 
-        Assert.Empty(result.Document.Validate());
+        // A real file may draw warnings (for example a malformed GlobalId, copied as it is), but never errors.
+        Assert.DoesNotContain(result.Document.Validate(), d => d.Severity == SceneSeverity.Error);
         Assert.Equal(
             model.AllElements.Count(e => !Regex.IsMatch(e.IfcType, "(TYPE|STYLE|PROPERTIES)$", RegexOptions.IgnoreCase)),
             result.ElementCount);

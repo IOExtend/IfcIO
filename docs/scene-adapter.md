@@ -10,8 +10,9 @@ that read scenes work from it. The scene model and its rules are specified in th
 [IOScene contract](https://github.com/IOExtend/IOScene/blob/main/docs/contract.md); property keys are registered in
 its [key registry](https://github.com/IOExtend/IOScene/blob/main/docs/keys.md).
 
-Status: preview. The project is built and tested with IfcIO but not published to NuGet until `IOScene` 0.1.0 is
-released. It references `IOScene` with the range `[0.1.0-preview.2, 0.2.0-0)`.
+Status: preview. The `IfcIO.Scene` package is released with IfcIO, on the same tag, and depends on exactly the same
+`IfcIO` version. Its first release needs `IOScene` 0.1.0: until then it references `IOScene` with the range
+`[0.1.0-preview.2, 0.2.0-0)` and a release fails on purpose.
 
 ## Usage
 

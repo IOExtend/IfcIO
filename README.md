@@ -130,7 +130,7 @@ model.Save("Building_4D_5D.ifc");
 
 See the [public API](docs/public-api.md) for the supported surface and [getting started guide](docs/getting-started.md) for detailed workflows.
 
-`IfcIO.Scene` (in this repository, not yet published) converts IFC models into `IOScene` scene documents for viewers and coordination tools; see the [scene adapter](docs/scene-adapter.md) page for usage and limits.
+`IfcIO.Scene` (a separate package released with `IfcIO`, from `IOScene` 0.1.0 on) converts IFC models into `IOScene` scene documents for viewers and coordination tools; see the [scene adapter](docs/scene-adapter.md) page for usage and limits.
 
 ## Documentation
 

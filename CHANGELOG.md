@@ -5,7 +5,8 @@ All notable changes to the `IfcIO` library are documented in this file.
 ## [Unreleased]
 
 ### Added
-- **`IfcIO.Scene`**: `IfcSceneReader` converts an IFC file or `IfcModel` into an `IOScene` `SceneDocument` in metres with Z up (GlobalIds as `SourceId` and `IfcGuid`, storeys as levels and tree nodes, property and quantity sets keyed `ifc:`, materials, 4D schedules), with diagnostics for elements without geometry. Not packed until `IOScene` 0.1.0 is released. See `docs/scene-adapter.md`.
+- **`IfcIO.Scene`**: `IfcSceneReader` converts an IFC file or `IfcModel` into an `IOScene` `SceneDocument` in metres with Z up (GlobalIds as `SourceId` and `IfcGuid`, storeys as levels and tree nodes, property and quantity sets keyed `ifc:`, materials, 4D schedules), with diagnostics for elements without geometry. See `docs/scene-adapter.md`.
+- **`IfcIO.Scene` NuGet package**: published on the `IfcIO` release tag and depends on exactly the same `IfcIO` version (`[X.Y.Z]`). It needs the released `IOScene` 0.1.0; the release fails while it would depend on an `IOScene` preview.
 
 ### Fixed
 - **World placement of geometry read from IFC (`IfcModel.Open`)**: element meshes are now in world coordinates. Previously object placements were ignored and every element sat at its local origin.

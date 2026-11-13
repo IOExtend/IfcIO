@@ -142,7 +142,7 @@ Reads and writes ISO 10303-21 STEP physical files conforming to **IFC2x3 Coordin
 
 ## Limitations
 
-- Version 0.10.0 is a preview. The API can evolve before 1.0.
+- Version 0.11.0 is a preview. The API can evolve before 1.0.
 - IFC5 (USD/JSON) is not yet supported.
 - Boolean mesh cutting evaluates planar CSG half-spaces; non-planar curved intersections are tessellated.
 
@@ -150,12 +150,12 @@ Reads and writes ISO 10303-21 STEP physical files conforming to **IFC2x3 Coordin
 
 IfcIO reads and writes IFC. The following extras are frozen: they get bug fixes only, no new features or options.
 
-- HTML viewer (`IfcHtmlViewerExporter`, `ifcio view`). Viewing will move to [IOViewer](https://github.com/IOExtend/IOViewer) through a planned `IfcIO.Scene` adapter over the shared, planned `IOScene` model.
+- HTML viewer (`IfcHtmlViewerExporter`, `ifcio view`). Viewing will move to [IOViewer](https://github.com/IOExtend/IOViewer) through the `IfcIO.Scene` adapter over the shared `IOScene` model.
 - GLB and OBJ export (`IfcGlbExporter`, `IfcObjExporter`). A shared GLB writer is planned in `IOScene.Formats`.
 - Clash detection, measure, grids, diff, and BCF archives (`IfcClashDetector`, `IfcClashGrouper`, `IfcMeasureEngine`, `IfcGridSystem`, `IfcDiffEngine`, `BcfArchive`, `BcfZipExporter`). These will move to a planned `IOCoord` package.
 - IFC work-schedule (4D) sequence logic. It stays in IfcIO.
 
-None of these packages is published yet. The frozen features stay available and are removed no earlier than IfcIO 1.0, and only after a published replacement exists.
+None of these replacements is published yet. The frozen features stay available and are removed no earlier than IfcIO 1.0, and only after a published replacement exists.
 
 ## Build from source and tests
 

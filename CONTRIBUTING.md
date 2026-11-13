@@ -20,10 +20,10 @@ Report security vulnerabilities privately through the **Security** tab.
 ## Scene adapter
 
 `src/IfcIO.Scene` converts IfcIO models into `IOScene` documents and uses only the public API of `IfcIO`; the `IfcIO`
-package itself keeps no dependencies. `IOScene` is referenced with the range `[0.1.0, 0.2.0-0)`, and restore takes the
+package itself keeps no dependencies. `IOScene` is referenced with the range `[0.1.0, 0.2.0-0.0)`, and restore takes the
 lowest version in it, 0.1.0 from NuGet.org. To build against an `IOScene` version that is not on NuGet.org yet, start
 the range in `Directory.Packages.props` at that version (for a new minor, move the upper bound too, for example
-`[0.2.0-preview.1, 0.3.0-0)`) and restore from a local folder of packages:
+`[0.2.0-preview.1, 0.3.0-0.0)`) and restore from a local folder of packages:
 `dotnet build IfcIO.slnx -p:RestoreAdditionalProjectSources=<folder>`. Changing the `SceneModel.Key`, `SourceId` or
 `IfcGuid` the adapter writes, its `ifc:` key format, or the value form (`Text`, `Kind`, `Unit`) it writes under a key
 fails the golden identity test and is a breaking release.

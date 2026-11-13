@@ -11,8 +11,8 @@ that read scenes work from it. The scene model and its rules are specified in th
 its [key registry](https://github.com/IOExtend/IOScene/blob/main/docs/keys.md).
 
 Status: preview. The `IfcIO.Scene` package is released with IfcIO, on the same tag, and depends on exactly the same
-`IfcIO` version. It references `IOScene` with the range `[0.1.0, 0.2.0-0)`: any 0.1 release from 0.1.0 on, and no
-preview of the next breaking line.
+`IfcIO` version. It references `IOScene` with the range `[0.1.0, 0.2.0-0.0)`: any 0.1 release from 0.1.0 on, and no
+preview of the next breaking line except `0.2.0-0`, which IOScene does not publish. Its first release is 0.11.1.
 
 ## Usage
 

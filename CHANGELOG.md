@@ -4,6 +4,23 @@ All notable changes to the `IfcIO` library are documented in this file.
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-11-13
+
+### Fixed
+- **`IfcIO.Scene` NuGet package**: published for the first time. nuget.org refused `IfcIO.Scene` 0.11.0 because the
+  upper bound of its `IOScene` range, `0.2.0-0`, is a version it does not accept in a dependency (a prerelease label of
+  one part must start with a letter). The range is now `[0.1.0, 0.2.0-0.0)`, which keeps out every 0.2.0 preview
+  except `0.2.0-0`, a version IOScene does not publish.
+  `IfcIO` and `IfcIO.Cli` 0.11.1 have the same code as 0.11.0.
+- `tools/pack-release.ps1` fails a release whose `IfcIO.Scene` dependency bounds nuget.org would refuse, and one whose
+  `IOScene` range has no lower bound.
+
+## [0.11.0] - 2026-11-13
+
+### Added
+- **`IfcIO.Scene`**: `IfcSceneReader` converts an IFC file or `IfcModel` into an `IOScene` `SceneDocument` in metres with Z up (GlobalIds as `SourceId` and `IfcGuid`, storeys as levels and tree nodes, property and quantity sets keyed `ifc:`, materials, 4D schedules), with diagnostics for elements without geometry. See `docs/scene-adapter.md`.
+- **`IfcIO.Scene` NuGet package**: published on the `IfcIO` release tag and depends on exactly the same `IfcIO` version (`[X.Y.Z]`). It references `IOScene` with the range `[0.1.0, 0.2.0-0)`; a release that would depend on an `IOScene` preview fails. Not published with 0.11.0: nuget.org refused the package because of that range (see 0.11.1).
+
 ### Fixed
 - **World placement of geometry read from IFC (`IfcModel.Open`)**: element meshes are now in world coordinates. Previously object placements were ignored and every element sat at its local origin.
   - `IfcLocalPlacement` chains (`PlacementRelTo`) are resolved up to the root, relative to the `WorldCoordinateSystem` of the 3D `Model` representation context.

@@ -2967,6 +2967,11 @@ public sealed class IfcModel
     /// Meshes an IfcExtrudedAreaSolid or IfcRevolvedAreaSolid in the coordinates of its representation and returns
     /// its parametric form, which keeps only the Position location (as IfcModel stores and writes it).
     /// </summary>
+    /// <param name="step">The STEP file that holds the solid and the entities it references.</param>
+    /// <param name="ent">The IfcExtrudedAreaSolid or IfcRevolvedAreaSolid entity.</param>
+    /// <param name="meshName">The name given to the returned mesh.</param>
+    /// <param name="extruded">The parametric extrusion, or null when the entity is not an extrusion or cannot be read.</param>
+    /// <param name="revolved">The parametric revolution, or null when the entity is not a revolution or cannot be read.</param>
     /// <param name="fullPlacement">True when Position or the profile Position rotates, so the parametric form does not describe the mesh.</param>
     private static IfcMesh? ParseSweptSolid(
         StepFile step,

@@ -3,7 +3,7 @@
   <PropertyGroup>
     <Description>Converts IFC models read by IfcIO into IOScene documents in metres with Z up, keeping GlobalIds, storeys, property sets, quantities and 4D schedules.</Description>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
-    <!-- IOScene is referenced by a range whose upper bound is a prerelease ([0.N.0, 0.N+1.0-0)); NU5104 is expected. -->
+    <!-- IOScene is referenced by a range whose upper bound is a prerelease ([0.N.0, 0.N+1.0-0.0)); NU5104 is expected. -->
     <NoWarn>$(NoWarn);NU5104</NoWarn>
   </PropertyGroup>
 

@@ -142,7 +142,7 @@ Reads and writes ISO 10303-21 STEP physical files conforming to **IFC2x3 Coordin
 
 ## Limitations
 
-- Version 0.11.0 is a preview. The API can evolve before 1.0.
+- Version 0.11.1 is a preview. The API can evolve before 1.0.
 - IFC5 (USD/JSON) is not yet supported.
 - Boolean mesh cutting evaluates planar CSG half-spaces; non-planar curved intersections are tessellated.
 

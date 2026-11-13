@@ -44,8 +44,21 @@ function Assert-AdapterNuspec([string]$NuspecPath, [string]$EngineId, [string]$V
     if ($scene.Count -eq 0) { throw "$NuspecPath has no dependency on IOScene." }
     foreach ($dependency in $scene) {
         $range = $dependency.GetAttribute('version')
-        if ($range.TrimStart('[', '(').Split(',')[0].Contains('-')) {
-            throw "$NuspecPath depends on IOScene '$range', whose lower bound is a prerelease; release IOScene first and require its stable version."
+        $lower = $range.TrimStart('[', '(').Split(',')[0].Trim()
+        if ($lower -eq '' -or $lower.Contains('-')) {
+            throw "$NuspecPath depends on IOScene '$range', whose lower bound is missing or a prerelease; release IOScene first and require its stable version."
+        }
+    }
+    # (c) nuget.org refuses a dependency bound with metadata, or one whose prerelease label has one part and does not start
+    # with a letter (NuGetGallery ManifestValidator.ValidateDependencyVersion); dotnet pack accepts both, so only the push would fail.
+    foreach ($dependency in $dependencies) {
+        $range = $dependency.GetAttribute('version')
+        foreach ($bound in $range.Trim('[', ']', '(', ')').Split(',')) {
+            $bound = $bound.Trim()
+            $label = if ($bound.Contains('-')) { $bound.Substring($bound.IndexOf('-') + 1) } else { '' }
+            if ($bound.Contains('+') -or ($label -ne '' -and -not $label.Contains('.') -and $label -notmatch '^[a-z][0-9a-z-]*$')) {
+                throw "$NuspecPath depends on $($dependency.GetAttribute('id')) '$range', whose bound '$bound' nuget.org refuses."
+            }
         }
     }
 }

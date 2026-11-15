@@ -20,8 +20,8 @@ test_files/
 *.ifc
 *.ifczip
 *.rvt
-# Small synthetic fixtures are committed on purpose
-!tests/**/Fixtures/**
+# The one synthetic fixture that is committed on purpose
+!tests/IfcIO.Scene.Tests/Fixtures/placement.ifc
 
 # Local secrets
 .env

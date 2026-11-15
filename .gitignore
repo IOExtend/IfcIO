@@ -14,3 +14,14 @@ __pycache__/
 # Documentation site (DocFX output and generated API pages)
 _site/
 docs/api/
+
+# Private test fixtures and customer models never go into the repository
+test_files/
+*.ifc
+*.ifczip
+*.rvt
+# Small synthetic fixtures are committed on purpose
+!tests/**/Fixtures/**
+
+# Local secrets
+.env

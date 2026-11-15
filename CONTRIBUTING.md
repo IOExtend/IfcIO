@@ -17,6 +17,18 @@ Report security vulnerabilities privately through the **Security** tab.
 - Keep nullable reference types enabled.
 - Warnings are treated as errors.
 
+## Clean-room rule
+
+All code is written independently from the ISO 10303-21 and buildingSMART
+specifications. Do not add vendor code, SDKs, SDK internals, headers or
+binaries, decompiled or leaked source, or code copied from other IFC
+libraries. Do not add customer models or other confidential data, or names,
+paths, sizes, GUIDs or other details of private sample files to the repository,
+including tests, comments and documentation. Test inputs are built
+synthetically in the tests; keep private test files outside version control.
+
+Do not put personal data in code, documentation, test data or commit metadata. Use your GitHub noreply address as the commit email.
+
 ## Scene adapter
 
 `src/IfcIO.Scene` converts IfcIO models into `IOScene` documents and uses only the public API of `IfcIO`; the `IfcIO`

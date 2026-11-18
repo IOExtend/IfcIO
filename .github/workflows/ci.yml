@@ -32,6 +32,9 @@ jobs:
     - name: Pack NuGet Packages
       run: dotnet pack IfcIO.slnx -c Release --no-build -o artifacts
 
+    - name: Build the scene adapter against the native engine
+      run: dotnet build src/IfcIO.Scene/IfcIO.Scene.csproj -c Release -p:BuildNativeCoreOnly=true --artifacts-path native-core-check
+
     - name: Upload Artifacts
       uses: actions/upload-artifact@v7
       with:

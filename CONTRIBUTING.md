@@ -31,6 +31,18 @@ Do not put personal data in code, documentation, test data or commit metadata. U
 
 ## Scene adapter
 
+The frozen viewer, non-IFC exporters and coordination implementations live in
+`src/IfcIO/Compatibility`. The regular build keeps their public namespaces,
+signatures and assembly identity. Native IFC validation, including IDS, stays
+with the engine. BCF reporting uses the compatibility implementation.
+
+CI also builds the native engine and its scene adapter with the compatibility
+sources excluded. This check is non-packable and uses a separate artifact path.
+
+```sh
+dotnet build src/IfcIO.Scene/IfcIO.Scene.csproj -c Release -p:BuildNativeCoreOnly=true --artifacts-path ./artifacts/native-core-check
+```
+
 `src/IfcIO.Scene` converts IfcIO models into `IOScene` documents and uses only the public API of `IfcIO`; the `IfcIO`
 package itself keeps no dependencies. `IOScene` is referenced with the range `[0.1.0, 0.2.0-0.0)`, and restore takes the
 lowest version in it, 0.1.0 from NuGet.org. To build against an `IOScene` version that is not on NuGet.org yet, start

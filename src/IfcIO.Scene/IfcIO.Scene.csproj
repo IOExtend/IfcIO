@@ -1,5 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <PropertyGroup Condition="'$(BuildNativeCoreOnly)' == 'true'">
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
   <PropertyGroup>
     <Description>Converts IFC models read by IfcIO into IOScene documents in metres with Z up, keeping GlobalIds, storeys, property sets, quantities and 4D schedules.</Description>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>

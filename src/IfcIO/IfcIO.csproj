@@ -6,4 +6,12 @@
     <IsPackable>true</IsPackable>
   </PropertyGroup>
 
+  <PropertyGroup Condition="'$(BuildNativeCoreOnly)' == 'true'">
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(BuildNativeCoreOnly)' == 'true'">
+    <Compile Remove="Compatibility/**/*.cs" />
+  </ItemGroup>
+
 </Project>

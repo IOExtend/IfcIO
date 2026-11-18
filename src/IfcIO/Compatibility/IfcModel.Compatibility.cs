@@ -1,9 +1,26 @@
 using IfcIO.Exporters;
+using IfcIO.Model;
 
 namespace IfcIO;
 
 public sealed partial class IfcModel
 {
+    /// <summary>Exports elements and selected properties to a CSV spreadsheet file.</summary>
+    public void ExportCsv(string path, IEnumerable<string> propertyNames, string delimiter = ";") =>
+        IfcCsvBridge.ExportFile(this, path, propertyNames, delimiter);
+
+    /// <summary>Exports elements and selected properties to a CSV <see cref="TextWriter"/>.</summary>
+    public void ExportCsv(TextWriter writer, IEnumerable<string> propertyNames, string delimiter = ";") =>
+        IfcCsvBridge.Export(this, writer, propertyNames, delimiter);
+
+    /// <summary>Imports tabular CSV property values into matching elements by GlobalId or Id from a file.</summary>
+    public (int ElementsUpdated, int PropertiesUpdated) ImportCsv(string path, string delimiter = ";") =>
+        IfcCsvBridge.ImportFile(this, path, delimiter);
+
+    /// <summary>Imports tabular CSV property values into matching elements by GlobalId or Id from a <see cref="TextReader"/>.</summary>
+    public (int ElementsUpdated, int PropertiesUpdated) ImportCsv(TextReader reader, string delimiter = ";") =>
+        IfcCsvBridge.Import(this, reader, delimiter);
+
     /// <summary>Spatial grid system (axes and levels) associated with the IFC model.</summary>
     public Grids.IfcGridSystem? GridSystem { get; set; }
 

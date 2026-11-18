@@ -151,11 +151,11 @@ Reads and writes ISO 10303-21 STEP physical files conforming to **IFC2x3 Coordin
 IfcIO reads and writes IFC. The following extras are frozen: they get bug fixes only, no new features or options.
 
 - HTML viewer (`IfcHtmlViewerExporter`, `ifcio view`). [IOViewer](https://github.com/IOExtend/IOViewer) can already open IFC files through the `IfcIO.Scene` adapter.
-- GLB and OBJ export (`IfcGlbExporter`, `IfcObjExporter`). A shared GLB writer is available in the `IOScene.Formats` source preview.
-- Clash detection, measure, grids, diff, and BCF archives (`IfcClashDetector`, `IfcClashGrouper`, `IfcMeasureEngine`, `IfcGridSystem`, `IfcDiffEngine`, `BcfArchive`, `BcfZipExporter`). The `IOCoord` source preview implements coordination queries and BCF export.
+- GLB and OBJ export (`IfcGlbExporter`, `IfcObjExporter`). The `IOScene.Formats` preview provides shared GLB and OBJ writers.
+- Clash detection, measure, grids, diff, and BCF archives (`IfcClashDetector`, `IfcClashGrouper`, `IfcMeasureEngine`, `IfcGridSystem`, `IfcDiffEngine`, `BcfArchive`, `BcfZipExporter`). The `IOCoord` preview implements coordination queries and BCF export.
 - IFC work-schedule (4D) sequence logic. It stays in IfcIO.
 
-The [optional IOScene tools](https://github.com/IOExtend/IOScene/blob/main/docs/tools.md) are available from source.
+The [optional IOScene tools](https://github.com/IOExtend/IOScene/blob/main/docs/tools.md) are available as NuGet preview packages.
 The frozen features stay available and are removed no earlier than IfcIO 1.0, and only after a published replacement exists.
 
 ## Build from source and tests

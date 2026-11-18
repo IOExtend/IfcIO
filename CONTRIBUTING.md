@@ -31,7 +31,7 @@ Do not put personal data in code, documentation, test data or commit metadata. U
 
 ## Scene adapter
 
-The frozen viewer, non-IFC exporters and coordination implementations live in
+The frozen viewer, coordination implementations and tabular CSV bridge live in
 `src/IfcIO/Compatibility`. The regular build keeps their public namespaces,
 signatures and assembly identity. Native IFC validation, including IDS, stays
 with the engine. BCF reporting uses the compatibility implementation.

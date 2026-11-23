@@ -154,6 +154,9 @@ public sealed class StepFile
     public string? OriginatingSystem { get; set; }
     public string? Authorization { get; set; }
     public string? Schema { get; set; }
+    /// <summary>All identifiers declared in FILE_SCHEMA.</summary>
+    public IReadOnlyList<string> SchemaIdentifiers { get; internal set; } = [];
+    internal bool HasSchemaDeclaration { get; set; }
 
     public Dictionary<int, StepEntity> Entities { get; } = new(4096);
 
@@ -284,7 +287,25 @@ public static class StepReader
         switch (statement[..open].TrimEnd().ToUpperInvariant())
         {
             case "FILE_SCHEMA":
-                file.Schema = Strings(0).FirstOrDefault();
+                if (file.HasSchemaDeclaration)
+                    throw new InvalidDataException("The STEP header contains more than one FILE_SCHEMA declaration.");
+                file.HasSchemaDeclaration = true;
+                if (arguments.Count != 1 || arguments[0] is not { Length: >= 2 } list
+                    || list[0] != '(' || list[^1] != ')')
+                    throw new InvalidDataException("FILE_SCHEMA must contain one list of schema identifiers.");
+                var schemaTokens = StepEntity.ParseArguments(list[1..^1]);
+                if (schemaTokens.Count == 0 || list.AsSpan(1, list.Length - 2).TrimEnd().EndsWith(","))
+                    throw new InvalidDataException("FILE_SCHEMA must contain a nonempty list of schema identifiers.");
+                var identifiers = new List<string>(schemaTokens.Count);
+                foreach (string token in schemaTokens)
+                {
+                    if (token.Length < 2 || token[0] != '\'' || token[^1] != '\''
+                        || StepEntity.DecodeString(token) is not { Length: > 0 } identifier)
+                        throw new InvalidDataException("FILE_SCHEMA identifiers must be nonempty STEP strings.");
+                    identifiers.Add(identifier);
+                }
+                file.SchemaIdentifiers = identifiers.AsReadOnly();
+                file.Schema = identifiers[0];
                 break;
             case "FILE_DESCRIPTION":
                 file.Descriptions = Strings(0).ToArray();

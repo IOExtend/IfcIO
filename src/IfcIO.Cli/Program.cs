@@ -181,6 +181,7 @@ Examples:
 
         var sw = Stopwatch.StartNew();
         var model = IfcModel.Open(inputPath);
+        WarnOnPartialIfc4x3Import(model);
         sw.Stop();
 
         int elementCount = 0;
@@ -213,7 +214,8 @@ Examples:
 
         Console.WriteLine($"  File size:         {sizeMb:F2} MB ({fileInfo.Length:N0} bytes)");
         Console.WriteLine($"  Parsed in:         {sw.ElapsedMilliseconds} ms");
-        Console.WriteLine($"  Schema:            {model.Schema}");
+        string schemaLabel = model.Schema == IfcSchema.Ifc4x3 ? $"Ifc4x3 ({model.SourceSchemaIdentifier}, subset import)" : model.Schema.ToString();
+        Console.WriteLine($"  Schema:            {schemaLabel}");
         Console.WriteLine($"  Project Name:      {model.ProjectName}");
         Console.WriteLine($"  Building Name:     {model.BuildingName}");
         Console.WriteLine($"  Storeys:           {model.Storeys.Count}");
@@ -303,7 +305,7 @@ Examples:
         string? objPath = GetOptionValue(args, "--obj");
         string? ifcPath = GetOptionValue(args, "--ifc");
         string? ifczipPath = GetOptionValue(args, "--ifczip");
-        string? schemaOpt = GetOptionValue(args, "--schema");
+        IfcSchema? schemaOpt = GetWritableSchemaOption(args, "--schema");
 
         if (glbPath is null && objPath is null && ifcPath is null && ifczipPath is null)
         {
@@ -315,12 +317,13 @@ Examples:
         var sw = Stopwatch.StartNew();
         var model = IfcModel.Open(inputPath);
 
-        if (schemaOpt is not null)
+        if (model.Schema == IfcSchema.Ifc4x3 && (ifcPath is not null || ifczipPath is not null))
         {
-            model.Schema = schemaOpt.Equals("ifc4", StringComparison.OrdinalIgnoreCase)
-                ? IfcSchema.Ifc4
-                : IfcSchema.Ifc2x3;
+            Console.Error.WriteLine("Error: IFC4X3 is supported for subset import only. Rewriting it as IFC is not supported.");
+            return 1;
         }
+        WarnOnPartialIfc4x3Import(model);
+        if (schemaOpt is { } requested) model.Schema = requested;
 
         if (glbPath is not null)
         {
@@ -644,6 +647,25 @@ Examples:
         return null;
     }
 
+    private static IfcSchema? GetWritableSchemaOption(string[] args, string option)
+    {
+        if (!args.Contains(option, StringComparer.OrdinalIgnoreCase)) return null;
+        return GetOptionValue(args, option)?.ToUpperInvariant() switch
+        {
+            "IFC2X3" => IfcSchema.Ifc2x3,
+            "IFC4" => IfcSchema.Ifc4,
+            _ => throw new ArgumentException($"{option} requires ifc2x3 or ifc4. Other IFC output schemas are not supported."),
+        };
+    }
+
+    private static void WarnOnPartialIfc4x3Import(IfcModel model)
+    {
+        if (model.Schema != IfcSchema.Ifc4x3) return;
+        Console.Error.WriteLine($"Warning: {model.SourceSchemaIdentifier} is read as a subset. Uninterpreted content is omitted.");
+        if (model.UnsupportedPlacementCount > 0)
+            Console.Error.WriteLine($"Warning: omitted {model.UnsupportedPlacementCount} representations or ports with unsupported placements.");
+    }
+
     private static int ExecuteQuery(string[] args)
     {
         if (args.Length < 2)
@@ -715,7 +737,10 @@ Examples:
         string? extractQuery = GetOptionValue(args, "--extract");
         string? offsetStr = GetOptionValue(args, "--offset");
         string? scaleStr = GetOptionValue(args, "--scale");
-        string? schemaStr = GetOptionValue(args, "--migrate") ?? (string.Equals(recipe, "migrate", StringComparison.OrdinalIgnoreCase) ? GetOptionValue(args, "--schema") : null);
+        IfcSchema? targetSchema = GetWritableSchemaOption(args, "--migrate");
+        if (targetSchema is null && string.Equals(recipe, "migrate", StringComparison.OrdinalIgnoreCase))
+            targetSchema = GetWritableSchemaOption(args, "--schema")
+                ?? throw new ArgumentException("--recipe migrate requires --schema ifc2x3 or ifc4.");
 
         Geometry.IfcVector3? manualOffset = null;
         if (args.Contains("--offset", StringComparer.OrdinalIgnoreCase))
@@ -774,11 +799,10 @@ Examples:
             Console.WriteLine($"  * Scaled model vertices by factor: {scaleFactor:G}");
         }
 
-        if (!string.IsNullOrEmpty(schemaStr))
+        if (targetSchema is { } requestedSchema)
         {
-            var targetSchema = schemaStr.Contains('4') ? IfcSchema.Ifc4 : IfcSchema.Ifc2x3;
-            Patch.IfcPatch.MigrateSchema(model, targetSchema);
-            Console.WriteLine($"  * Migrated model schema to: {targetSchema}");
+            Patch.IfcPatch.MigrateSchema(model, requestedSchema);
+            Console.WriteLine($"  * Migrated model schema to: {requestedSchema}");
         }
 
         model.Save(outputPath);
@@ -1182,6 +1206,7 @@ Examples:
 
         var sw = Stopwatch.StartNew();
         var model = IfcModel.Open(inputPath);
+        WarnOnPartialIfc4x3Import(model);
 
         if (gridsPath is not null)
         {

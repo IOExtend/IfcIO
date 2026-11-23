@@ -5,6 +5,8 @@ All notable changes to the `IfcIO` library are documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- IFC import recognizes IFC4.3 separately and reports unknown, missing and multiple schema identifiers. IFC4.3
+  is read as a subset and is not silently rewritten as IFC4.
 - Element factories allocate IDs across the model rather than per storey; the writer avoids generated GlobalId
   collisions, and clash storey filters no longer confuse distinct elements that share a caller-assigned ID.
 - IFC export declares feet and inches as conversion-based length units and respects the selected plane angle unit.

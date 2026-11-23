@@ -143,6 +143,8 @@ The documentation site with API references and guides is at <https://ioextend.gi
 ## Supported files
 
 Reads and writes ISO 10303-21 STEP physical files conforming to **IFC2x3 Coordination View V2.0** and **IFC4 Design Transfer / Reference View**, compressed PKZip `.ifczip` archives, and buildingSMART BCF 2.1 `.bcfzip` packages.
+**IFC4.3** (`IFC4X3`, `IFC4X3_ADD1`, `IFC4X3_ADD2`) can be read for inspection and supported geometry, but cannot be
+rewritten as IFC. Unknown, missing, or multiple IFC schema identifiers are reported rather than guessed.
 
 ## Limitations
 

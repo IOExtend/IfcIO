@@ -32,7 +32,25 @@ public static class IfcValidator
             });
         }
 
-        if (model.Schema != IfcSchema.Ifc2x3 && model.Schema != IfcSchema.Ifc4)
+        if (model.IsIfc4x3Subset)
+        {
+            issues.Add(new IfcValidationIssue
+            {
+                RuleId = "IFC_SCHEMA_SUBSET",
+                Severity = IfcIssueSeverity.Warning,
+                Message = "IFC4X3 is read as a subset. These checks do not validate full IFC4X3 conformance.",
+            });
+            if (model.UnsupportedPlacementCount > 0)
+            {
+                issues.Add(new IfcValidationIssue
+                {
+                    RuleId = "IFC_UNSUPPORTED_PLACEMENTS",
+                    Severity = IfcIssueSeverity.Warning,
+                    Message = $"Omitted {model.UnsupportedPlacementCount} representations or ports with unsupported IFC4X3 placements.",
+                });
+            }
+        }
+        else if (model.Schema != IfcSchema.Ifc2x3 && model.Schema != IfcSchema.Ifc4)
         {
             issues.Add(new IfcValidationIssue
             {

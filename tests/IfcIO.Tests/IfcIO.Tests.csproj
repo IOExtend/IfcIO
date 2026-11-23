@@ -18,6 +18,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\IfcIO\IfcIO.csproj" />
     <ProjectReference Include="..\..\src\IfcIO.Cli\IfcIO.Cli.csproj" />
+    <EmbeddedResource Include="..\IfcIO.Scene.Tests\Fixtures\placement.ifc" LogicalName="IfcIO.Tests.placement.ifc" />
   </ItemGroup>
 
 </Project>

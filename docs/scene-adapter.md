@@ -93,8 +93,8 @@ rebases them, for example on `ComputeBounds().Center`, before narrowing them to 
   `ifc:` keys and come after the occurrence sets in `PropertySetIds`, so a lookup by key finds the occurrence value
   first.
 - Property values are text even when the IFC value is a number or a boolean: IfcIO keeps only the text.
-- Length, area, volume and weight quantities are text in file units. For a file whose length unit IfcIO converts to
-  metres while reading (for example centimetres), geometry is in metres but quantities stay in file units.
+- Length quantities are text in the model's length unit, which may be metres for a file in a different length
+  unit (for example centimetres). Area, volume and weight quantities retain the file's values.
 - An element without a GlobalId in the file gets a new random GlobalId from IfcIO each time it is read, so its
   `SourceId` is not stable.
 - Transparency is not read from files by IfcIO; materials built in memory keep their alpha.

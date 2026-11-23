@@ -249,7 +249,7 @@ public static class IfcSceneReader
     private static SceneDiagnostic Issue(SceneSeverity severity, string code, string reason, IfcElement element) =>
         new(severity, code, $"{reason}; element #{element.Id} '{element.Name}' ({element.IfcType}) has no geometry in the scene.", element.GlobalId);
 
-    // Quantities are doubles in IfcIO, in the file's units (not always IfcModel.LengthUnit), which IfcIO does not report.
+    // Length quantities use the model's length unit; the other quantities retain their file values.
     // A number with a null Unit means dimensionless, so only a count is a number; every other quantity is text.
     private static SceneValue QuantityValue(IfcPhysicalQuantity quantity)
     {

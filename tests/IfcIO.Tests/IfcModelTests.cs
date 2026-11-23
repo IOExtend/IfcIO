@@ -191,6 +191,56 @@ public class IfcModelTests
     }
 
     [Fact]
+    public void IfcModel_Open_NormalizesLengthQuantitiesToTheModelLengthUnit()
+    {
+        const string input = """
+            ISO-10303-21;
+            HEADER; FILE_SCHEMA(('IFC4')); ENDSEC;
+            DATA;
+            #1=IFCPROJECT('01vctVUKr0kugbFTf53O9L',$,'Units',$,$,$,$,(),#2);
+            #2=IFCUNITASSIGNMENT((#3));
+            #3=IFCSIUNIT(*,.LENGTHUNIT.,.CENTI.,.METRE.);
+            #4=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+            #5=IFCDIMENSIONALEXPONENTS(1,0,0,0,0,0,0);
+            #6=IFCMEASUREWITHUNIT(IFCLENGTHMEASURE(0.3048),#4);
+            #7=IFCCONVERSIONBASEDUNITWITHOFFSET(#5,.LENGTHUNIT.,'FOOT',#6,0.);
+            #10=IFCWALL('10vctVUKr0kugbFTf53O9L',$,'Wall',$,$,$,$,$,.STANDARD.);
+            #11=IFCQUANTITYLENGTH('Project length',$,$,250.,$);
+            #12=IFCQUANTITYLENGTH('Explicit units',$,#7,3.,$);
+            #13=IFCELEMENTQUANTITY('13vctVUKr0kugbFTf53O9L',$,'Dimensions',$,$,(#11,#12));
+            #14=IFCRELDEFINESBYPROPERTIES('14vctVUKr0kugbFTf53O9L',$,$,$,(#10),#13);
+            ENDSEC;
+            END-ISO-10303-21;
+            """;
+
+        var model = IfcModel.Open(new StringReader(input));
+        Assert.Equal(IfcLengthUnit.Metre, model.LengthUnit);
+        var reopened = IfcModel.Open(new StringReader(model.ToStepString()));
+        var quantities = Assert.Single(Assert.Single(reopened.AllElements).QuantitySets).Quantities;
+        Assert.Collection(quantities,
+            q => Assert.Equal(2.5, Assert.IsType<IfcQuantityLength>(q).LengthValue),
+            q => Assert.Equal(0.9144, Assert.IsType<IfcQuantityLength>(q).LengthValue, 9));
+    }
+
+    [Fact]
+    public void IfcModel_Save_MetreBasedCostQuantityHasExplicitUnitInImperialProject()
+    {
+        var model = IfcModel.Create("Imperial cost plan", IfcSchema.Ifc4);
+        model.LengthUnit = IfcLengthUnit.Foot;
+        model.AddCostSchedule("Materials").AddCostItem("Pipe", unitRate: 15, quantity: 10, unitBasis: "m");
+
+        var step = StepReader.Read(new StringReader(model.ToStepString()));
+
+        var quantity = Assert.Single(step.OfType("IFCQUANTITYLENGTH"));
+        Assert.Equal(10.0, quantity.GetReal(3));
+        var unit = step.Find(quantity.GetRef(2));
+        Assert.NotNull(unit);
+        Assert.Equal("IFCSIUNIT", unit.Type);
+        Assert.Equal(".METRE.", unit.GetRaw(3));
+        Assert.Null(unit.GetRaw(2));
+    }
+
+    [Fact]
     public void IfcModel_Open_ImportsOnlySupportedProductOccurrences()
     {
         const string input = """

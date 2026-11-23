@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.IO.Compression;
 using System.Text.Json;
+using IfcIO.Api;
 using IfcIO.Core;
 using IfcIO.Geometry;
 using IfcIO.Model;
@@ -11,6 +12,122 @@ namespace IfcIO.Tests;
 
 public class IfcModelTests
 {
+    [Fact]
+    public void Factories_AllocateDistinctIdsAndExportDistinctGlobalIdsAcrossStoreys()
+    {
+        var model = IfcModel.Create("Two levels", IfcSchema.Ifc4);
+        var lower = model.AddStorey("Lower");
+        var upper = model.AddStorey("Upper", 3000);
+        var wall = lower.AddWall("Wall");
+        IfcApi.Root.CreateBeam(upper, "Beam");
+        model.AddExtrudedRectangle("Column", 250, 250, 3000, storey: upper, ifcType: "IFCCOLUMN");
+        model.AddSpace("Room", storey: upper);
+        model.AddOpening(wall, "Void");
+
+        var products = model.AllElements.Concat<IfcElement>(model.AllSpaces).Concat(model.AllOpenings).ToList();
+        Assert.Equal(5, products.Count);
+        Assert.Equal(products.Count, products.Select(element => element.Id).Distinct().Count());
+
+        var file = StepReader.Read(new StringReader(model.ToStepString()));
+        var guids = file.Entities.Values.Where(entity => entity.Type is "IFCWALL" or "IFCBEAM" or "IFCCOLUMN" or "IFCSPACE" or "IFCOPENINGELEMENT")
+            .Select(entity => entity.GetString(0)).ToList();
+        Assert.Equal(products.Count, guids.Count);
+        Assert.Equal(products.Count, guids.Distinct(StringComparer.Ordinal).Count());
+    }
+
+    [Fact]
+    public void Open_ReservesImportedProductIdsWhenAddingToExistingAndNewStoreys()
+    {
+        const string source = """
+            HEADER; FILE_SCHEMA(('IFC4')); ENDSEC;
+            DATA;
+            #2=IFCWALL('01vctVUKr0kugbFTf53O9L',$,'Imported wall',$,$,$,$,$,.STANDARD.);
+            ENDSEC;
+            """;
+        var reopened = IfcModel.Open(new StringReader(source));
+        var original = Assert.Single(reopened.AllElements);
+
+        reopened.Storeys[0].AddSlab("Added slab");
+        IfcApi.Root.CreateBeam(reopened.AddStorey("Roof"), "Added beam");
+        reopened.AddElement(new IfcElement { Id = 4, Name = "Manually assigned" });
+        reopened.Storeys[0].AddColumn("Added column");
+
+        Assert.Equal(5, reopened.AllElements.Select(element => element.Id).Distinct().Count());
+        Assert.Contains(reopened.AllElements, element => ReferenceEquals(original, element));
+    }
+
+    [Fact]
+    public void Save_ReusedUserIdsDoNotGenerateDuplicateGlobalIds()
+    {
+        var model = IfcModel.Create("Manual IDs", IfcSchema.Ifc4);
+        var lower = model.AddStorey("Lower");
+        var upper = model.AddStorey("Upper");
+        string assigned = IfcGuid.FromElementId(7);
+        model.AddElement(new IfcElement { Id = 7, Name = "Lower wall", IfcType = "IFCWALL" }, lower);
+        model.AddElement(new IfcElement { Id = 7, Name = "Upper wall", IfcType = "IFCWALL" }, upper);
+        model.AddElement(new IfcElement { Id = 8, Name = "Explicit wall", IfcType = "IFCWALL", GlobalId = assigned }, upper);
+
+        Dictionary<string, string?> WallsByName() => StepReader.Read(new StringReader(model.ToStepString())).OfType("IFCWALL")
+            .ToDictionary(e => e.GetString(2)!, e => e.GetString(0), StringComparer.Ordinal);
+        var first = WallsByName();
+        Assert.Equal(3, first.Values.Distinct(StringComparer.Ordinal).Count());
+        Assert.Equal(assigned, first["Explicit wall"]);
+
+        model.Storeys.Reverse();
+        var reordered = WallsByName();
+        foreach (var (name, guid) in first) Assert.Equal(guid, reordered[name]);
+    }
+
+    [Fact]
+    public void Factories_ReserveDirectListEditsAndAttachPassedStoreys()
+    {
+        var model = IfcModel.Create("Public collections");
+        var upper = new IfcBuildingStorey { Name = "Upper" };
+        model.Storeys.Add(upper);
+        model.Storeys[0].Elements.Add(new IfcElement { Id = 1, Name = "Directly added" });
+
+        var first = model.AddMesh("First mesh", [new(0, 0, 0), new(1, 0, 0), new(0, 1, 0)], [0, 1, 2], storey: upper);
+        var wall = upper.AddWall("Wall");
+        upper.Elements[1] = new IfcElement { Id = 4, Name = "Same-position replacement" };
+        var beam = upper.AddBeam("After replacement");
+
+        Assert.Equal(2, first.Id);
+        Assert.Equal(3, wall.Id);
+        Assert.Equal(5, beam.Id);
+        Assert.Equal(4, model.AllElements.Select(element => element.Id).Distinct().Count());
+    }
+
+    [Fact]
+    public void Save_GeneratedOccurrenceGlobalIdDoesNotCollideWithASystem()
+    {
+        var model = IfcModel.Create("System");
+        var wall = model.Storeys[0].AddWall("Wall");
+        var system = model.AddSystem("System");
+        system.GlobalId = IfcGuid.FromElementId(wall.Id);
+
+        var step = StepReader.Read(new StringReader(model.ToStepString()));
+        Assert.Equal(system.GlobalId, Assert.Single(step.OfType("IFCSYSTEM")).GetString(0));
+        Assert.NotEqual(system.GlobalId, Assert.Single(step.OfType("IFCWALL")).GetString(0));
+    }
+
+    [Fact]
+    public void ExtractAndMerge_KeepTheNewStoreysAttachedToTheModelAllocator()
+    {
+        var first = IfcModel.Create("First");
+        first.AddStorey("Lower").AddWall("Wall");
+        var second = IfcModel.Create("Second");
+        second.AddStorey("Upper", 3000).AddSlab("Slab");
+
+        var merged = IfcModel.Merge([first, second]);
+        var extracted = merged.Extract(_ => true);
+        foreach (var model in new[] { merged, extracted })
+        {
+            IfcApi.Spatial.AssignContainer(model.Storeys[0], new IfcElement { Id = 3, Name = "Custom element" });
+            IfcApi.Root.CreateBeam(model.Storeys[1], "Later beam");
+            Assert.Equal(4, model.AllElements.Select(element => element.Id).Distinct().Count());
+        }
+    }
+
     [Fact]
     public void IfcGuid_RoundTrip_ParsesCorrectly()
     {

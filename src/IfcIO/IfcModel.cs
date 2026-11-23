@@ -47,11 +47,51 @@ public sealed partial class IfcModel
     public IEnumerable<IfcDistributionPort> AllPorts => AllElements.SelectMany(e => e.Ports);
 
     private bool _hasCustomStorey;
+    private readonly HashSet<int> _reservedElementIds = [];
+    private int _nextElementId = 1;
 
     public IfcModel()
     {
         // Default storey
-        Storeys.Add(new IfcBuildingStorey { Name = "Level 1", Elevation = 0.0 });
+        RegisterStorey(new IfcBuildingStorey { Name = "Level 1", Elevation = 0.0 });
+    }
+
+    internal int AllocateElementId(IfcBuildingStorey? targetStorey = null)
+    {
+        foreach (var storey in Storeys)
+            AttachStorey(storey);
+        if (targetStorey is not null && targetStorey.Model != this)
+            AttachStorey(targetStorey);
+        while (!_reservedElementIds.Add(_nextElementId))
+        {
+            if (_nextElementId == int.MaxValue)
+                throw new InvalidOperationException("The model has exhausted its positive element IDs.");
+            _nextElementId++;
+        }
+        return _nextElementId;
+    }
+
+    internal void ReserveElementIds(IfcElement element)
+    {
+        _reservedElementIds.Add(element.Id);
+        foreach (var opening in element.Openings)
+        {
+            _reservedElementIds.Add(opening.Id);
+            if (opening.Filling is { } filling)
+                _reservedElementIds.Add(filling.Id);
+        }
+    }
+
+    private void AttachStorey(IfcBuildingStorey storey)
+    {
+        if (storey.Model is null) storey.Model = this;
+        storey.SynchronizeIds(this);
+    }
+
+    internal void RegisterStorey(IfcBuildingStorey storey)
+    {
+        AttachStorey(storey);
+        Storeys.Add(storey);
     }
 
     /// <summary>Creates a new empty IFC model with the specified project name and schema.</summary>
@@ -70,6 +110,7 @@ public sealed partial class IfcModel
         var existing = Storeys.Find(s => s.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
         if (existing is not null)
         {
+            AttachStorey(existing);
             _hasCustomStorey = true;
             existing.Elevation = elevation;
             return existing;
@@ -86,7 +127,7 @@ public sealed partial class IfcModel
 
         _hasCustomStorey = true;
         var storey = new IfcBuildingStorey { Name = name, Elevation = elevation };
-        Storeys.Add(storey);
+        RegisterStorey(storey);
         return storey;
     }
 
@@ -110,7 +151,9 @@ public sealed partial class IfcModel
     {
         ArgumentNullException.ThrowIfNull(element);
         storey ??= Storeys[0];
-        storey.Elements.Add(element);
+        AttachStorey(storey);
+        ReserveElementIds(element);
+        storey.AddExistingElement(element);
     }
 
     /// <summary>Creates and adds an element with a 3D mesh geometry to the model.</summary>
@@ -124,7 +167,7 @@ public sealed partial class IfcModel
     {
         storey ??= Storeys[0];
 
-        int nextId = storey.Elements.Count + 1;
+        int nextId = AllocateElementId(storey);
         var mesh = IfcMesh.Create(nextId, name, vertices, indices);
 
         var element = new IfcElement
@@ -141,7 +184,7 @@ public sealed partial class IfcModel
             Materials.Add(material);
         }
 
-        storey.Elements.Add(element);
+        storey.AddExistingElement(element);
         return element;
     }
 
@@ -158,7 +201,7 @@ public sealed partial class IfcModel
         string? ifcType = null)
     {
         storey ??= Storeys[0];
-        int nextId = storey.Elements.Count + 1;
+        int nextId = AllocateElementId(storey);
         var profile = new IfcRectangleProfileDef(xDim, yDim, name: $"{name}_Profile");
         var solid = new IfcExtrudedAreaSolid(profile, depth, position, direction);
 
@@ -176,7 +219,7 @@ public sealed partial class IfcModel
             Materials.Add(material);
         }
 
-        storey.Elements.Add(element);
+        storey.AddExistingElement(element);
         return element;
     }
 
@@ -192,7 +235,7 @@ public sealed partial class IfcModel
         string? ifcType = null)
     {
         storey ??= Storeys[0];
-        int nextId = storey.Elements.Count + 1;
+        int nextId = AllocateElementId(storey);
         var profile = new IfcCircleProfileDef(radius, name: $"{name}_Profile");
         var solid = new IfcExtrudedAreaSolid(profile, depth, position, direction);
 
@@ -210,7 +253,7 @@ public sealed partial class IfcModel
             Materials.Add(material);
         }
 
-        storey.Elements.Add(element);
+        storey.AddExistingElement(element);
         return element;
     }
 
@@ -226,7 +269,7 @@ public sealed partial class IfcModel
         string? ifcType = null)
     {
         storey ??= Storeys[0];
-        int nextId = storey.Elements.Count + 1;
+        int nextId = AllocateElementId(storey);
         var solid = new IfcRevolvedAreaSolid(profile, angle, position, axis);
 
         var element = new IfcElement
@@ -243,7 +286,7 @@ public sealed partial class IfcModel
             Materials.Add(material);
         }
 
-        storey.Elements.Add(element);
+        storey.AddExistingElement(element);
         return element;
     }
 
@@ -281,7 +324,9 @@ public sealed partial class IfcModel
     {
         ArgumentNullException.ThrowIfNull(hostElement);
 
-        int nextId = (AllOpenings.Count() + 1) * 1000 + hostElement.Id;
+        ReserveElementIds(hostElement);
+        if (filling is not null) ReserveElementIds(filling);
+        int nextId = AllocateElementId();
         var opening = new IfcOpeningElement
         {
             Id = nextId,
@@ -308,7 +353,7 @@ public sealed partial class IfcModel
         IfcMesh? mesh = null)
     {
         storey ??= Storeys[0];
-        int nextId = (storey.Elements.Count + storey.Spaces.Count + 1) * 10;
+        int nextId = AllocateElementId(storey);
         var space = new IfcSpace
         {
             Id = nextId,
@@ -321,7 +366,7 @@ public sealed partial class IfcModel
             GrossVolume = grossFloorArea * height,
             Mesh = mesh,
         };
-        storey.Spaces.Add(space);
+        storey.AddExistingSpace(space);
         return space;
     }
 
@@ -434,7 +479,7 @@ public sealed partial class IfcModel
         ArgumentNullException.ThrowIfNull(plane);
 
         storey ??= Storeys[0];
-        int nextId = storey.Elements.Count + 1;
+        int nextId = AllocateElementId(storey);
 
         var halfSpace = new IfcHalfSpaceSolid(plane, agreementFlag);
         var booleanResult = new IfcBooleanResult(solid, halfSpace, IfcBooleanOperator.Difference);
@@ -738,6 +783,20 @@ public sealed partial class IfcModel
         var storeyIds = new List<int>();
         var typeToElementsMap = new Dictionary<IfcTypeProduct, List<int>>();
         var elementEntityMap = new Dictionary<IfcElement, int>();
+        var productGuids = new HashSet<string>(StringComparer.Ordinal);
+        var duplicatedProductIds = ReserveProductIdentities(productGuids);
+        int nextCollision = 2;
+
+        string ProductGuid(IfcElement element, string domain)
+        {
+            if (element.GlobalId is { } assigned) return assigned;
+            string generated = IfcGuid.FromElementId(element.Id, domain);
+            if (duplicatedProductIds.Contains((element.Id, domain)) || productGuids.Contains(generated))
+                generated = IfcGuid.FromKey(domain + ":" + element.DuplicateIdentity);
+            while (!productGuids.Add(generated))
+                generated = IfcGuid.FromElementId(element.Id, domain + ":" + (nextCollision++).ToString(CultureInfo.InvariantCulture));
+            return generated;
+        }
 
         bool useTessellation = (Schema == IfcSchema.Ifc4 && UseTessellationInIfc4);
 
@@ -760,7 +819,7 @@ public sealed partial class IfcModel
 
                 int prodShapeId = WriteElementShape(w, element, bodySubContextId, styleCache, useTessellation);
 
-                string elemGuid = element.GlobalId ?? IfcGuid.FromElementId(element.Id, "IfcIO");
+                string elemGuid = ProductGuid(element, "IfcIO");
                 string ifcType = !string.IsNullOrEmpty(element.IfcType)
                     ? element.IfcType
                     : ClassifyElement(element.Name, element.Material?.Name);
@@ -778,7 +837,7 @@ public sealed partial class IfcModel
                             $"{StepWriter.Ref(prodPlacementId)},{StepWriter.Ref(worldPlacement3dId)}");
                         int openShapeId = WriteElementShape(w, opening, bodySubContextId, styleCache, useTessellation);
 
-                        string openGuid = opening.GlobalId ?? IfcGuid.FromElementId(opening.Id, "IfcIO-Opening");
+                        string openGuid = ProductGuid(opening, "IfcIO-Opening");
                         int openElemId = w.Add("IFCOPENINGELEMENT",
                             $"{StepWriter.Str(openGuid)},{StepWriter.Ref(ownerHistoryId)},{StepWriter.Str(opening.Name)},$,$,{StepWriter.Ref(openPlacementId)},{StepWriter.Ref(openShapeId)},{StepWriter.Str(opening.Tag ?? opening.Id.ToString(CultureInfo.InvariantCulture))},.OPENING.");
 
@@ -792,7 +851,7 @@ public sealed partial class IfcModel
                                 $"{StepWriter.Ref(openPlacementId)},{StepWriter.Ref(worldPlacement3dId)}");
                             int fillShapeId = WriteElementShape(w, filling, bodySubContextId, styleCache, useTessellation);
 
-                            string fillGuid = filling.GlobalId ?? IfcGuid.FromElementId(filling.Id, "IfcIO-Filling");
+                            string fillGuid = ProductGuid(filling, "IfcIO-Filling");
                             string fillType = !string.IsNullOrEmpty(filling.IfcType)
                                 ? filling.IfcType
                                 : ClassifyElement(filling.Name, filling.Material?.Name);
@@ -836,7 +895,7 @@ public sealed partial class IfcModel
                 }
                 string spaceShapeRef = spaceShapeId > 0 ? StepWriter.Ref(spaceShapeId) : "$";
 
-                string spaceGuid = space.GlobalId ?? IfcGuid.FromElementId(space.Id, "IfcIO-Space");
+                string spaceGuid = ProductGuid(space, "IfcIO-Space");
                 string intExt = space.InteriorOrExteriorSpace == IfcInternalOrExternal.External ? ".EXTERNAL." : ".INTERNAL.";
 
                 int spaceId = w.Add("IFCSPACE",
@@ -1420,6 +1479,53 @@ public sealed partial class IfcModel
         }
     }
 
+    private HashSet<(int Id, string Domain)> ReserveProductIdentities(HashSet<string> guids)
+    {
+        var generatedIds = new HashSet<(int Id, string Domain)>();
+        var duplicates = new HashSet<(int Id, string Domain)>();
+        void Reserve(string? guid)
+        {
+            if (guid is not null) guids.Add(guid);
+        }
+
+        void Product(IfcElement element, string domain)
+        {
+            if (element.GlobalId is { } guid) Reserve(guid);
+            else if (!generatedIds.Add((element.Id, domain))) duplicates.Add((element.Id, domain));
+        }
+
+        foreach (var type in TypeProducts) Reserve(type.GlobalId);
+        foreach (var group in Groups) Reserve(group.GlobalId);
+        foreach (var system in Systems) Reserve(system.GlobalId);
+        foreach (var zone in Zones) Reserve(zone.GlobalId);
+        foreach (var schedule in WorkSchedules)
+        {
+            Reserve(schedule.GlobalId);
+            foreach (var task in schedule.AllTasks) Reserve(task.GlobalId);
+        }
+        foreach (var schedule in CostSchedules)
+        {
+            Reserve(schedule.GlobalId);
+            foreach (var item in schedule.AllCostItems) Reserve(item.GlobalId);
+        }
+        foreach (var storey in Storeys)
+        {
+            Reserve(storey.GlobalId);
+            foreach (var element in storey.Elements)
+            {
+                Product(element, "IfcIO");
+                foreach (var port in element.Ports) Reserve(port.GlobalId);
+                foreach (var opening in element.Openings)
+                {
+                    Product(opening, "IfcIO-Opening");
+                    if (opening.Filling is { } filling) Product(filling, "IfcIO-Filling");
+                }
+            }
+            foreach (var space in storey.Spaces) Product(space, "IfcIO-Space");
+        }
+        return duplicates;
+    }
+
     /// <summary>Parses an existing IFC STEP file (.ifc or .ifczip) from disk into a structured model.</summary>
     public static IfcModel Open(string path) => Open(path, options: null);
 
@@ -1514,14 +1620,14 @@ public sealed partial class IfcModel
                 Elevation = (sEnt.GetReal(9) ?? 0.0) * geometryScale,
                 GlobalId = sEnt.GetString(0),
             };
-            model.Storeys.Add(storey);
+            model.RegisterStorey(storey);
             storeyMap[sEnt.Id] = storey;
         }
 
         if (model.Storeys.Count == 0)
         {
             var defStorey = new IfcBuildingStorey { Name = "Level 1", Elevation = 0.0 };
-            model.Storeys.Add(defStorey);
+            model.RegisterStorey(defStorey);
         }
 
         // 3. Parse Materials & Styles
@@ -2425,6 +2531,7 @@ public sealed partial class IfcModel
             }
         }
 
+        model._reservedElementIds.UnionWith(allElementsMap.Keys);
         return model;
     }
 

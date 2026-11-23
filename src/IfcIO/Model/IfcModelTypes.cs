@@ -1,3 +1,4 @@
+using IfcIO.Core;
 using IfcIO.Geometry;
 
 namespace IfcIO.Model;
@@ -225,33 +226,82 @@ public sealed class IfcBuildingStorey
     public string? GlobalId { get; set; }
     public List<IfcElement> Elements { get; } = [];
     public List<IfcSpace> Spaces { get; } = [];
+    internal IfcModel? Model { get; set; }
+    private IfcModel? _snapshotModel;
+    private List<IfcElement>.Enumerator _elementsSnapshot;
+    private List<IfcSpace>.Enumerator _spacesSnapshot;
 
-    public IfcElement AddWall(string name, IfcMesh? mesh = null, IfcMaterial? material = null)
+    internal void SynchronizeIds(IfcModel model)
     {
-        var wall = new IfcElement { Id = Elements.Count + 1, Name = name, IfcType = "IFCWALL", Mesh = mesh, Material = material };
-        Elements.Add(wall);
-        return wall;
+        // The public lists are mutable. A copied enumerator detects edits, including replacement at
+        // the same index, without rescanning every product on normal factory calls.
+        if (ReferenceEquals(_snapshotModel, model) && Unchanged(_elementsSnapshot) && Unchanged(_spacesSnapshot)) return;
+        foreach (var element in Elements) model.ReserveElementIds(element);
+        foreach (var space in Spaces) model.ReserveElementIds(space);
+        if (ReferenceEquals(Model, model)) RecordSnapshot(model);
     }
 
-    public IfcElement AddSlab(string name, IfcMesh? mesh = null, IfcMaterial? material = null)
+    internal void AddExistingElement(IfcElement element)
     {
-        var slab = new IfcElement { Id = Elements.Count + 1, Name = name, IfcType = "IFCSLAB", Mesh = mesh, Material = material };
-        Elements.Add(slab);
-        return slab;
+        if (Model is { } model)
+        {
+            SynchronizeIds(model);
+            model.ReserveElementIds(element);
+        }
+        Elements.Add(element);
+        if (Model is not null) RecordSnapshot(Model);
     }
 
-    public IfcElement AddColumn(string name, IfcMesh? mesh = null, IfcMaterial? material = null)
+    internal void AddExistingSpace(IfcSpace space)
     {
-        var col = new IfcElement { Id = Elements.Count + 1, Name = name, IfcType = "IFCCOLUMN", Mesh = mesh, Material = material };
-        Elements.Add(col);
-        return col;
+        if (Model is { } model)
+        {
+            SynchronizeIds(model);
+            model.ReserveElementIds(space);
+        }
+        Spaces.Add(space);
+        if (Model is not null) RecordSnapshot(Model);
     }
 
-    public IfcElement AddBeam(string name, IfcMesh? mesh = null, IfcMaterial? material = null)
+    private void RecordSnapshot(IfcModel model)
     {
-        var beam = new IfcElement { Id = Elements.Count + 1, Name = name, IfcType = "IFCBEAM", Mesh = mesh, Material = material };
-        Elements.Add(beam);
-        return beam;
+        _snapshotModel = model;
+        _elementsSnapshot = Elements.GetEnumerator();
+        _spacesSnapshot = Spaces.GetEnumerator();
+    }
+
+    private static bool Unchanged<T>(List<T>.Enumerator snapshot)
+    {
+        try
+        {
+            snapshot.MoveNext();
+            return true;
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
+    public IfcElement AddWall(string name, IfcMesh? mesh = null, IfcMaterial? material = null) =>
+        AddProduct(name, "IFCWALL", mesh, material);
+
+    public IfcElement AddSlab(string name, IfcMesh? mesh = null, IfcMaterial? material = null) =>
+        AddProduct(name, "IFCSLAB", mesh, material);
+
+    public IfcElement AddColumn(string name, IfcMesh? mesh = null, IfcMaterial? material = null) =>
+        AddProduct(name, "IFCCOLUMN", mesh, material);
+
+    public IfcElement AddBeam(string name, IfcMesh? mesh = null, IfcMaterial? material = null) =>
+        AddProduct(name, "IFCBEAM", mesh, material);
+
+    private IfcElement AddProduct(string name, string type, IfcMesh? mesh, IfcMaterial? material)
+    {
+        int id = Model?.AllocateElementId(this) ??
+            checked(1 + Elements.Concat<IfcElement>(Spaces).Select(element => element.Id).Prepend(0).Max());
+        var product = new IfcElement { Id = id, Name = name, IfcType = type, Mesh = mesh, Material = material };
+        AddExistingElement(product);
+        return product;
     }
 }
 
@@ -283,6 +333,9 @@ public sealed class IfcTypeProduct
 /// </summary>
 public class IfcElement
 {
+    private string? _duplicateIdentity;
+    internal string DuplicateIdentity => _duplicateIdentity ??= IfcGuid.NewGuid();
+
     public required int Id { get; init; }
     public required string Name { get; set; }
     public string IfcType { get; set; } = "IFCBUILDINGELEMENTPROXY";

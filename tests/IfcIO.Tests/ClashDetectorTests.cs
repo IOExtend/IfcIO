@@ -74,6 +74,30 @@ public sealed class ClashDetectorTests
     }
 
     [Fact]
+    public void DetectClashes_DuplicateUserIdsDoNotHideCrossStoreyClashes()
+    {
+        var model = IfcModel.Create("Storey clash");
+        var lower = model.AddStorey("Lower");
+        var upper = model.AddStorey("Upper", 3);
+        model.AddElement(new IfcElement
+        {
+            Id = 1, Name = "Beam", IfcType = "IFCBEAM",
+            Solid = new IfcExtrudedAreaSolid(new IfcRectangleProfileDef(6, 0.3), 0.5, new IfcVector3(0, 0, 3)),
+        }, lower);
+        model.AddElement(new IfcElement
+        {
+            Id = 1, Name = "Column", IfcType = "IFCCOLUMN",
+            Solid = new IfcExtrudedAreaSolid(new IfcRectangleProfileDef(0.4, 0.4), 4, new IfcVector3(2, 0, 0)),
+        }, upper);
+
+        var report = model.DetectClashes(new IfcClashOptions { ExcludeSameStorey = true });
+
+        var clash = Assert.Single(report.Clashes);
+        Assert.Equal("Beam", clash.ElementA.Name);
+        Assert.Equal("Column", clash.ElementB.Name);
+    }
+
+    [Fact]
     public void ClashReport_SaveJson_OutputsValidJson()
     {
         var modelA = IfcModel.Create("Arch", IfcSchema.Ifc4);

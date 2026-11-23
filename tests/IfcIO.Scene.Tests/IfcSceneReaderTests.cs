@@ -360,10 +360,10 @@ public class IfcSceneReaderTests
     [Fact]
     public void Read_DuplicateElementIds_Throws()
     {
-        // A model built in memory numbers elements per storey, so two storeys both start at 1.
+        // The adapter still rejects collisions when callers supply IDs themselves.
         var model = IfcModel.Create("Duplicates");
-        model.AddMesh("A", Mm(Triangle), [0, 1, 2]);
-        model.AddMesh("B", Mm(Triangle), [0, 1, 2], storey: model.AddStorey("Level 2", 3000));
+        var first = model.AddMesh("A", Mm(Triangle), [0, 1, 2]);
+        model.AddElement(new IfcElement { Id = first.Id, Name = "B", Mesh = first.Mesh }, model.AddStorey("Level 2", 3000));
 
         var ex = Assert.Throws<ArgumentException>(() => Read(model));
         Assert.Contains("used twice", ex.Message, StringComparison.Ordinal);

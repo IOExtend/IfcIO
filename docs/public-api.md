@@ -26,6 +26,11 @@ declaration. For a file known to have this legacy error, use
 `IfcModel.Open(path, new IfcReadOptions { LegacyIfcIoRevolvedAnglesInRadians = true })`, then save the model, or run
 `ifcio patch old.ifc --legacy-ifcio-radian-sweeps -o repaired.ifc`.
 
+Factory methods allocate element IDs across a model's storeys, including after import. Create storeys with
+`IfcModel.AddStorey`, or pass a caller-created storey to a model factory before calling its own factories.
+Factory calls reserve IDs already in the registered storeys' element and space lists. Export avoids collisions
+among generated product GlobalIds and does not rewrite explicit GlobalIds.
+
 ## Geometry & Representation
 
 | Type | Description |

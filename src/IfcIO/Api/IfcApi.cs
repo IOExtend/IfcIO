@@ -119,7 +119,7 @@ public static class IfcApi
             {
                 if (!storey.Elements.Contains(el))
                 {
-                    storey.Elements.Add(el);
+                    storey.AddExistingElement(el);
                 }
             }
         }
@@ -143,64 +143,28 @@ public static class IfcApi
         public static IfcElement CreateWall(IfcBuildingStorey storey, string name, IfcMesh? mesh = null, IfcMaterial? material = null)
         {
             ArgumentNullException.ThrowIfNull(storey);
-            var wall = new IfcElement
-            {
-                Id = storey.Elements.Count + 1,
-                Name = name,
-                IfcType = "IFCWALL",
-                Mesh = mesh,
-                Material = material
-            };
-            storey.Elements.Add(wall);
-            return wall;
+            return storey.AddWall(name, mesh, material);
         }
 
         /// <summary>Creates and adds an IFCSLAB element to a storey.</summary>
         public static IfcElement CreateSlab(IfcBuildingStorey storey, string name, IfcMesh? mesh = null, IfcMaterial? material = null)
         {
             ArgumentNullException.ThrowIfNull(storey);
-            var slab = new IfcElement
-            {
-                Id = storey.Elements.Count + 1,
-                Name = name,
-                IfcType = "IFCSLAB",
-                Mesh = mesh,
-                Material = material
-            };
-            storey.Elements.Add(slab);
-            return slab;
+            return storey.AddSlab(name, mesh, material);
         }
 
         /// <summary>Creates and adds an IFCCOLUMN element to a storey.</summary>
         public static IfcElement CreateColumn(IfcBuildingStorey storey, string name, IfcMesh? mesh = null, IfcMaterial? material = null)
         {
             ArgumentNullException.ThrowIfNull(storey);
-            var column = new IfcElement
-            {
-                Id = storey.Elements.Count + 1,
-                Name = name,
-                IfcType = "IFCCOLUMN",
-                Mesh = mesh,
-                Material = material
-            };
-            storey.Elements.Add(column);
-            return column;
+            return storey.AddColumn(name, mesh, material);
         }
 
         /// <summary>Creates and adds an IFCBEAM element to a storey.</summary>
         public static IfcElement CreateBeam(IfcBuildingStorey storey, string name, IfcMesh? mesh = null, IfcMaterial? material = null)
         {
             ArgumentNullException.ThrowIfNull(storey);
-            var beam = new IfcElement
-            {
-                Id = storey.Elements.Count + 1,
-                Name = name,
-                IfcType = "IFCBEAM",
-                Mesh = mesh,
-                Material = material
-            };
-            storey.Elements.Add(beam);
-            return beam;
+            return storey.AddBeam(name, mesh, material);
         }
     }
 }

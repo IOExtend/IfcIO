@@ -213,7 +213,7 @@ public static class IfcPatch
                 targetStorey.Elements.Add(clone);
             }
 
-            target.Storeys.Add(targetStorey);
+            target.RegisterStorey(targetStorey);
         }
 
         return target;
@@ -270,13 +270,13 @@ public static class IfcPatch
                         Name = storey.Name,
                         Elevation = storey.Elevation,
                     };
-                    merged.Storeys.Add(targetStorey);
+                    merged.RegisterStorey(targetStorey);
                 }
 
                 foreach (var elem in storey.Elements)
                 {
                     var clone = CloneElement(elem, nextId++);
-                    targetStorey.Elements.Add(clone);
+                    merged.AddElement(clone, targetStorey);
                 }
             }
         }

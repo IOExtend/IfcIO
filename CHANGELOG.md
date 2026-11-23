@@ -5,6 +5,8 @@ All notable changes to the `IfcIO` library are documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- Element factories allocate IDs across the model rather than per storey; the writer avoids generated GlobalId
+  collisions, and clash storey filters no longer confuse distinct elements that share a caller-assigned ID.
 - IFC export declares feet and inches as conversion-based length units and respects the selected plane angle unit.
   Revolved-solid geometry converts between the file's angle unit and radians in memory. The CLI labels storey elevations in the model's units.
 - Length quantities follow the model length unit after import, and metre-based cost quantities retain their explicit unit.

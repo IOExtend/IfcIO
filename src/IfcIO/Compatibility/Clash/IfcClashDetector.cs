@@ -46,7 +46,7 @@ public static class IfcClashDetector
                 new IfcVector3(boxA.Max.X + tol, boxA.Max.Y + tol, boxA.Max.Z + tol)
             );
 
-            storeyMapA.TryGetValue(elemA.Id, out var sA);
+            storeyMapA.TryGetValue(elemA, out var sA);
 
             foreach (var (elemB, meshB) in elemsB)
             {
@@ -55,7 +55,7 @@ public static class IfcClashDetector
                     continue;
                 }
 
-                if (options.ExcludeSameStorey && sA is not null && storeyMapB.TryGetValue(elemB.Id, out var sB) && sA.Name.Equals(sB.Name, StringComparison.OrdinalIgnoreCase))
+                if (options.ExcludeSameStorey && sA is not null && storeyMapB.TryGetValue(elemB, out var sB) && sA.Name.Equals(sB.Name, StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
                 }
@@ -120,7 +120,7 @@ public static class IfcClashDetector
                 new IfcVector3(boxA.Max.X + tol, boxA.Max.Y + tol, boxA.Max.Z + tol)
             );
 
-            storeyMap.TryGetValue(elemA.Id, out var sA);
+            storeyMap.TryGetValue(elemA, out var sA);
 
             for (int j = i + 1; j < count; j++)
             {
@@ -131,7 +131,7 @@ public static class IfcClashDetector
                     continue;
                 }
 
-                if (options.ExcludeSameStorey && sA is not null && storeyMap.TryGetValue(elemB.Id, out var sB) && sA.Name.Equals(sB.Name, StringComparison.OrdinalIgnoreCase))
+                if (options.ExcludeSameStorey && sA is not null && storeyMap.TryGetValue(elemB, out var sB) && ReferenceEquals(sA, sB))
                 {
                     continue;
                 }
@@ -188,14 +188,14 @@ public static class IfcClashDetector
         return list;
     }
 
-    private static Dictionary<int, IfcBuildingStorey> BuildStoreyMap(IfcModel model)
+    private static Dictionary<IfcElement, IfcBuildingStorey> BuildStoreyMap(IfcModel model)
     {
-        var map = new Dictionary<int, IfcBuildingStorey>();
+        var map = new Dictionary<IfcElement, IfcBuildingStorey>(ReferenceEqualityComparer.Instance);
         foreach (var storey in model.Storeys)
         {
             foreach (var elem in storey.Elements)
             {
-                map[elem.Id] = storey;
+                map[elem] = storey;
             }
         }
         return map;

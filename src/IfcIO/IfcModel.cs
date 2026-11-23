@@ -2407,7 +2407,7 @@ public sealed partial class IfcModel
         return model;
     }
 
-    private static int WriteElementShape(StepWriter w, IfcElement element, int bodySubContextId, Dictionary<string, int> styleCache, bool useTessellation)
+    private int WriteElementShape(StepWriter w, IfcElement element, int bodySubContextId, Dictionary<string, int> styleCache, bool useTessellation)
     {
         int? styleId = null;
         if (element.Material is not null)
@@ -2485,29 +2485,35 @@ public sealed partial class IfcModel
         return StepWriter.Null == "$" ? w.Add("IFCPRODUCTDEFINITIONSHAPE", "$,$,()") : 0;
     }
 
-    private static int WriteProfileDef(StepWriter w, IfcProfileDef profile)
+    private int WriteProfileDef(StepWriter w, IfcProfileDef profile)
     {
+        bool ifc2x3 = Schema == IfcSchema.Ifc2x3;
+        string Placement(IfcVector3 position)
+        {
+            // Position is mandatory on IfcParameterizedProfileDef in IFC2x3.
+            bool hasOffset = Math.Abs(position.X) > 1e-9 || Math.Abs(position.Y) > 1e-9;
+            if (!ifc2x3 && !hasOffset) return "$";
+            int point = w.Add("IFCCARTESIANPOINT", StepWriter.List(StepWriter.Real(position.X), StepWriter.Real(position.Y)));
+            return StepWriter.Ref(w.Add("IFCAXIS2PLACEMENT2D", $"{StepWriter.Ref(point)},$"));
+        }
+
+        // Omitting a zero radius represents a sharp corner where IFC2x3 requires a positive measure.
+        string Fillet(double? radius)
+        {
+            if (radius is not double value || ifc2x3 && value == 0) return "$";
+            string formatted = StepWriter.Real(value);
+            return value > 0 && formatted == "0."
+                ? value.ToString("0.0##############E+0", CultureInfo.InvariantCulture)
+                : formatted;
+        }
+
         if (profile is IfcRectangleProfileDef rect)
         {
-            string placement2dRef = "$";
-            if (Math.Abs(rect.Position.X) > 1e-9 || Math.Abs(rect.Position.Y) > 1e-9)
-            {
-                int pt2dId = w.Add("IFCCARTESIANPOINT", StepWriter.List(StepWriter.Real(rect.Position.X), StepWriter.Real(rect.Position.Y)));
-                int pl2dId = w.Add("IFCAXIS2PLACEMENT2D", $"{StepWriter.Ref(pt2dId)},$");
-                placement2dRef = StepWriter.Ref(pl2dId);
-            }
-            return w.Add("IFCRECTANGLEPROFILEDEF", $".AREA.,{StepWriter.Str(rect.ProfileName)},{placement2dRef},{StepWriter.Real(rect.XDim)},{StepWriter.Real(rect.YDim)}");
+            return w.Add("IFCRECTANGLEPROFILEDEF", $".AREA.,{StepWriter.Str(rect.ProfileName)},{Placement(rect.Position)},{StepWriter.Real(rect.XDim)},{StepWriter.Real(rect.YDim)}");
         }
         if (profile is IfcCircleProfileDef circ)
         {
-            string placement2dRef = "$";
-            if (Math.Abs(circ.Position.X) > 1e-9 || Math.Abs(circ.Position.Y) > 1e-9)
-            {
-                int pt2dId = w.Add("IFCCARTESIANPOINT", StepWriter.List(StepWriter.Real(circ.Position.X), StepWriter.Real(circ.Position.Y)));
-                int pl2dId = w.Add("IFCAXIS2PLACEMENT2D", $"{StepWriter.Ref(pt2dId)},$");
-                placement2dRef = StepWriter.Ref(pl2dId);
-            }
-            return w.Add("IFCCIRCLEPROFILEDEF", $".AREA.,{StepWriter.Str(circ.ProfileName)},{placement2dRef},{StepWriter.Real(circ.Radius)}");
+            return w.Add("IFCCIRCLEPROFILEDEF", $".AREA.,{StepWriter.Str(circ.ProfileName)},{Placement(circ.Position)},{StepWriter.Real(circ.Radius)}");
         }
         if (profile is IfcArbitraryClosedProfileDef poly)
         {
@@ -2521,48 +2527,30 @@ public sealed partial class IfcModel
         }
         if (profile is IfcIShapeProfileDef ishape)
         {
-            string placement2dRef = "$";
-            if (Math.Abs(ishape.Position.X) > 1e-9 || Math.Abs(ishape.Position.Y) > 1e-9)
-            {
-                int pt2dId = w.Add("IFCCARTESIANPOINT", StepWriter.List(StepWriter.Real(ishape.Position.X), StepWriter.Real(ishape.Position.Y)));
-                int pl2dId = w.Add("IFCAXIS2PLACEMENT2D", $"{StepWriter.Ref(pt2dId)},$");
-                placement2dRef = StepWriter.Ref(pl2dId);
-            }
-            string fillet = ishape.FilletRadius.HasValue ? StepWriter.Real(ishape.FilletRadius.Value) : "$";
+            // FlangeEdgeRadius and FlangeSlope are present only in IFC4.
+            string flange = ifc2x3 ? "" : ",$,$";
             return w.Add("IFCISHAPEPROFILEDEF",
-                $".AREA.,{StepWriter.Str(ishape.ProfileName)},{placement2dRef},{StepWriter.Real(ishape.OverallWidth)},{StepWriter.Real(ishape.OverallDepth)},{StepWriter.Real(ishape.WebThickness)},{StepWriter.Real(ishape.FlangeThickness)},{fillet}");
+                $".AREA.,{StepWriter.Str(ishape.ProfileName)},{Placement(ishape.Position)},{StepWriter.Real(ishape.OverallWidth)},{StepWriter.Real(ishape.OverallDepth)},{StepWriter.Real(ishape.WebThickness)},{StepWriter.Real(ishape.FlangeThickness)},{Fillet(ishape.FilletRadius)}{flange}");
         }
         if (profile is IfcLShapeProfileDef lshape)
         {
-            string placement2dRef = "$";
-            if (Math.Abs(lshape.Position.X) > 1e-9 || Math.Abs(lshape.Position.Y) > 1e-9)
-            {
-                int pt2dId = w.Add("IFCCARTESIANPOINT", StepWriter.List(StepWriter.Real(lshape.Position.X), StepWriter.Real(lshape.Position.Y)));
-                int pl2dId = w.Add("IFCAXIS2PLACEMENT2D", $"{StepWriter.Ref(pt2dId)},$");
-                placement2dRef = StepWriter.Ref(pl2dId);
-            }
-            string fillet = lshape.FilletRadius.HasValue ? StepWriter.Real(lshape.FilletRadius.Value) : "$";
+            // CentreOfGravityInX/Y are present only in IFC2x3.
+            string centre = ifc2x3 ? ",$,$" : "";
             return w.Add("IFCLSHAPEPROFILEDEF",
-                $".AREA.,{StepWriter.Str(lshape.ProfileName)},{placement2dRef},{StepWriter.Real(lshape.Depth)},{StepWriter.Real(lshape.Width)},{StepWriter.Real(lshape.Thickness)},{fillet},$,$");
+                $".AREA.,{StepWriter.Str(lshape.ProfileName)},{Placement(lshape.Position)},{StepWriter.Real(lshape.Depth)},{StepWriter.Real(lshape.Width)},{StepWriter.Real(lshape.Thickness)},{Fillet(lshape.FilletRadius)},$,${centre}");
         }
         if (profile is IfcUShapeProfileDef ushape)
         {
-            string placement2dRef = "$";
-            if (Math.Abs(ushape.Position.X) > 1e-9 || Math.Abs(ushape.Position.Y) > 1e-9)
-            {
-                int pt2dId = w.Add("IFCCARTESIANPOINT", StepWriter.List(StepWriter.Real(ushape.Position.X), StepWriter.Real(ushape.Position.Y)));
-                int pl2dId = w.Add("IFCAXIS2PLACEMENT2D", $"{StepWriter.Ref(pt2dId)},$");
-                placement2dRef = StepWriter.Ref(pl2dId);
-            }
-            string fillet = ushape.FilletRadius.HasValue ? StepWriter.Real(ushape.FilletRadius.Value) : "$";
+            // EdgeRadius and FlangeSlope exist in both schemas, CentreOfGravityInX only in IFC2x3.
+            string centre = ifc2x3 ? ",$" : "";
             return w.Add("IFCUSHAPEPROFILEDEF",
-                $".AREA.,{StepWriter.Str(ushape.ProfileName)},{placement2dRef},{StepWriter.Real(ushape.Depth)},{StepWriter.Real(ushape.FlangeWidth)},{StepWriter.Real(ushape.WebThickness)},{StepWriter.Real(ushape.FlangeThickness)},{fillet},$");
+                $".AREA.,{StepWriter.Str(ushape.ProfileName)},{Placement(ushape.Position)},{StepWriter.Real(ushape.Depth)},{StepWriter.Real(ushape.FlangeWidth)},{StepWriter.Real(ushape.WebThickness)},{StepWriter.Real(ushape.FlangeThickness)},{Fillet(ushape.FilletRadius)},$,${centre}");
         }
 
         throw new NotSupportedException($"Profile type {profile.GetType().Name} is not supported.");
     }
 
-    private static int WriteBooleanResult(StepWriter w, IfcBooleanResult csg, bool useTessellation)
+    private int WriteBooleanResult(StepWriter w, IfcBooleanResult csg, bool useTessellation)
     {
         int firstId = 0;
         if (csg.FirstSolid is not null)
@@ -2608,7 +2596,7 @@ public sealed partial class IfcModel
         return w.Add(entityType, $"{op},{StepWriter.Ref(firstId)},{StepWriter.Ref(secondId)}");
     }
 
-    private static int WriteExtrudedAreaSolid(StepWriter w, IfcExtrudedAreaSolid solid)
+    private int WriteExtrudedAreaSolid(StepWriter w, IfcExtrudedAreaSolid solid)
     {
         int profileId = WriteProfileDef(w, solid.Profile);
         int solidPtId = w.Add("IFCCARTESIANPOINT", StepWriter.List(StepWriter.Real(solid.Position.X), StepWriter.Real(solid.Position.Y), StepWriter.Real(solid.Position.Z)));
@@ -2618,7 +2606,7 @@ public sealed partial class IfcModel
         return w.Add("IFCEXTRUDEDAREASOLID", $"{StepWriter.Ref(profileId)},{StepWriter.Ref(solidPlacementId)},{StepWriter.Ref(dirId)},{StepWriter.Real(solid.Depth)}");
     }
 
-    private static int WriteRevolvedAreaSolid(StepWriter w, IfcRevolvedAreaSolid solid)
+    private int WriteRevolvedAreaSolid(StepWriter w, IfcRevolvedAreaSolid solid)
     {
         int profileId = WriteProfileDef(w, solid.Profile);
         int solidPtId = w.Add("IFCCARTESIANPOINT", StepWriter.List(StepWriter.Real(solid.Position.X), StepWriter.Real(solid.Position.Y), StepWriter.Real(solid.Position.Z)));

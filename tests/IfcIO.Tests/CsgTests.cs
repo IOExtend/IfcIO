@@ -1,3 +1,4 @@
+using IfcIO.Core;
 using IfcIO.Geometry;
 using IfcIO.Model;
 using Xunit;
@@ -97,5 +98,61 @@ public sealed class CsgTests
         Assert.NotNull(loadedElem.BooleanResult.FirstSolid);
         Assert.IsType<IfcIShapeProfileDef>(loadedElem.BooleanResult.FirstSolid.Profile);
         Assert.NotNull(loadedElem.BooleanResult.SecondHalfSpace);
+    }
+
+    [Theory]
+    [InlineData(Schema.IfcSchema.Ifc2x3, 8, 11, 11, false)]
+    [InlineData(Schema.IfcSchema.Ifc4, 10, 9, 10, false)]
+    [InlineData(Schema.IfcSchema.Ifc2x3, 8, 11, 11, true)]
+    [InlineData(Schema.IfcSchema.Ifc4, 10, 9, 10, true)]
+    public void WriteProfiles_EmitSchemaSpecificAttributesAndPlacement(
+        Schema.IfcSchema schema, int iCount, int lCount, int uCount, bool translated)
+    {
+        var model = IfcModel.Create("Structural profiles", schema);
+        IfcVector3 position = translated ? new(5, -7, 0) : IfcVector3.Zero;
+        var cut = new IfcPlane(new IfcVector3(0, 0, 500), IfcVector3.UnitZ);
+        model.AddClippedSolid("Beam", new IfcExtrudedAreaSolid(new IfcIShapeProfileDef(200, 300, 10, 15,
+            filletRadius: 0, position: position), 1000), cut);
+        model.AddClippedSolid("Angle", new IfcExtrudedAreaSolid(new IfcLShapeProfileDef(150, 80, 8,
+            filletRadius: 6, position: position), 1000), cut);
+        model.AddClippedSolid("Channel", new IfcExtrudedAreaSolid(new IfcUShapeProfileDef(200, 80, 8, 12,
+            filletRadius: 1e-7, position: position), 1000), cut);
+        model.AddClippedSolid("Rectangle", new IfcExtrudedAreaSolid(new IfcRectangleProfileDef(100, 50, position),
+            1000), cut);
+        model.AddClippedSolid("Circle", new IfcExtrudedAreaSolid(new IfcCircleProfileDef(50, position),
+            1000), cut);
+
+        var step = StepReader.Read(new StringReader(model.ToStepString()));
+        var iShape = Assert.Single(step.OfType("IFCISHAPEPROFILEDEF"));
+        var lShape = Assert.Single(step.OfType("IFCLSHAPEPROFILEDEF"));
+        var uShape = Assert.Single(step.OfType("IFCUSHAPEPROFILEDEF"));
+        var rectangle = Assert.Single(step.OfType("IFCRECTANGLEPROFILEDEF"));
+        var circle = Assert.Single(step.OfType("IFCCIRCLEPROFILEDEF"));
+        Assert.Equal(iCount, iShape.Arguments.Count);
+        Assert.Equal(lCount, lShape.Arguments.Count);
+        Assert.Equal(uCount, uShape.Arguments.Count);
+        Assert.Equal(schema == Schema.IfcSchema.Ifc4 ? 0.0 : null, iShape.GetReal(7));
+        Assert.Equal(6.0, lShape.GetReal(6));
+        Assert.Equal(1e-7, uShape.GetReal(7));
+        Assert.Equal("1.0E-7", uShape.GetRaw(7));
+        Assert.All(lShape.Arguments.Skip(7), arg => Assert.Equal("$", arg));
+        Assert.All(uShape.Arguments.Skip(8), arg => Assert.Equal("$", arg));
+        Assert.All(iShape.Arguments.Skip(8), arg => Assert.Equal("$", arg));
+
+        foreach (var profile in new[] { iShape, lShape, uShape, rectangle, circle })
+        {
+            if (schema == Schema.IfcSchema.Ifc4 && !translated)
+            {
+                Assert.Null(profile.GetRef(2));
+                continue;
+            }
+            var placement = step.Find(profile.GetRef(2));
+            Assert.NotNull(placement);
+            Assert.Equal("IFCAXIS2PLACEMENT2D", placement.Type);
+            var point = step.Find(placement.GetRef(0));
+            Assert.NotNull(point);
+            Assert.Equal("IFCCARTESIANPOINT", point.Type);
+            Assert.Equal(translated ? "(5.,-7.)" : "(0.,0.)", point.GetRaw(0));
+        }
     }
 }

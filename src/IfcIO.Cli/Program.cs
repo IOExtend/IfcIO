@@ -101,6 +101,8 @@ Patch Options:
   --purge               Remove empty/duplicate property sets, quantity sets, and empty storeys
   --reset-coords        Shift large UTM coordinates to local origin (0,0,0) to prevent jitter
   --offset <x,y,z>      Translate model geometry by given coordinate offset
+  --legacy-ifcio-radian-sweeps
+                       Repair old IfcIO files that stored sweep angles in radians despite declaring degrees
   --extract <query>     Extract matching elements into a separate IFC model
   -o, --output <path>   Output file path for patched IFC model
 
@@ -229,9 +231,17 @@ Examples:
             Console.ForegroundColor = ConsoleColor.Yellow;
             Console.WriteLine("  Spatial Hierarchy (Storeys):");
             Console.ResetColor();
+            string elevationUnit = model.LengthUnit switch
+            {
+                IfcLengthUnit.Millimetre => "mm",
+                IfcLengthUnit.Metre => "m",
+                IfcLengthUnit.Foot => "ft",
+                IfcLengthUnit.Inch => "in",
+                _ => "?",
+            };
             foreach (var storey in model.Storeys)
             {
-                Console.WriteLine($"    - {storey.Name,-24} Elevation: {storey.Elevation,8:F2} mm | Elements: {storey.Elements.Count} | Spaces: {storey.Spaces.Count}");
+                Console.WriteLine($"    - {storey.Name,-24} Elevation: {storey.Elevation,8:F2} {elevationUnit} | Elements: {storey.Elements.Count} | Spaces: {storey.Spaces.Count}");
             }
         }
 
@@ -723,7 +733,10 @@ Examples:
         }
 
         var sw = Stopwatch.StartNew();
-        var model = IfcModel.Open(inputPath);
+        var model = IfcModel.Open(inputPath, new IfcReadOptions
+        {
+            LegacyIfcIoRevolvedAnglesInRadians = args.Contains("--legacy-ifcio-radian-sweeps", StringComparer.OrdinalIgnoreCase),
+        });
 
         if (!string.IsNullOrEmpty(extractQuery))
         {

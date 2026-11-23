@@ -15,6 +15,17 @@ This page summarizes the public types and entry points of the `IfcIO` package.
 | `IfcBuildingStorey`, `IfcSpace` | Storeys hold elements and spaces and carry elevations. The model does not expose separate `IfcSite`, `IfcBuilding`, or `IfcProject` objects. |
 | `IfcGuid` | buildingSMART 22-character compressed GlobalId encoder/decoder with bidirectional conversion to 128-bit .NET `Guid`. |
 
+`IfcModel.LengthUnit` controls the declared unit of geometry and storey elevations. IFC import keeps recognised
+millimetres, metres, feet and inches in the model; other supported length scales are converted to metres.
+`IfcModel.AngleUnit` controls the IFC plane angle unit, but `IfcRevolvedAreaSolid.Angle` is always in radians in memory.
+If the file has no usable plane angle unit, the reader assumes radians. Length quantities are read in the same
+length unit as geometry; area and volume quantity handling is unchanged.
+
+Older IfcIO exports declared degrees but stored revolved-solid angles in radians. Normal reads trust the IFC unit
+declaration. For a file known to have this legacy error, use
+`IfcModel.Open(path, new IfcReadOptions { LegacyIfcIoRevolvedAnglesInRadians = true })`, then save the model, or run
+`ifcio patch old.ifc --legacy-ifcio-radian-sweeps -o repaired.ifc`.
+
 ## Geometry & Representation
 
 | Type | Description |

@@ -5,6 +5,10 @@ All notable changes to the `IfcIO` library are documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- IFC export declares feet and inches as conversion-based length units and respects the selected plane angle unit.
+  Revolved-solid geometry converts between the file's angle unit and radians in memory. The CLI labels storey elevations in the model's units.
+- Length quantities follow the model length unit after import, and metre-based cost quantities retain their explicit unit.
+- Read options and `ifcio patch --legacy-ifcio-radian-sweeps` let callers repair older IfcIO files with mislabeled sweep angles.
 - IFC import no longer treats type definitions, styles, or lining properties as building element occurrences.
 - IFC2x3 and IFC4 exports write the profile attributes expected by each schema for I, L and U sections. IFC2x3
   parameterized profiles also get the required local placement, including at the origin.

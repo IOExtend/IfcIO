@@ -680,20 +680,14 @@ public sealed partial class IfcModel
             $"{StepWriter.Ref(personOrgId)},{StepWriter.Ref(appId)},.READWRITE.,.NOCHANGE.,$,$,$,{epochSeconds}");
 
         // 2. Units & Geometric Context
-        int lengthUnitId = LengthUnit == IfcLengthUnit.Millimetre
-            ? w.Add("IFCSIUNIT", "*,.LENGTHUNIT.,.MILLI.,.METRE.")
-            : w.Add("IFCSIUNIT", "*,.LENGTHUNIT.,$,.METRE.");
-
-        int radianId = w.Add("IFCSIUNIT", "*,.PLANEANGLEUNIT.,$,.RADIAN.");
-        int dimExpId = w.Add("IFCDIMENSIONALEXPONENTS", "0,0,0,0,0,0,0");
-        int angleMeasureId = w.Add("IFCMEASUREWITHUNIT", $"IFCPLANEANGLEMEASURE({DegreeInRadians}),{StepWriter.Ref(radianId)}");
-        int degreeUnitId = w.Add("IFCCONVERSIONBASEDUNIT", $"{StepWriter.Ref(dimExpId)},.PLANEANGLEUNIT.,'DEGREE',{StepWriter.Ref(angleMeasureId)}");
+        int lengthUnitId = WriteLengthUnit(w, LengthUnit);
+        int angleUnitId = WritePlaneAngleUnit(w, AngleUnit);
 
         int areaUnitId = w.Add("IFCSIUNIT", "*,.AREAUNIT.,$,.SQUARE_METRE.");
         int volumeUnitId = w.Add("IFCSIUNIT", "*,.VOLUMEUNIT.,$,.CUBIC_METRE.");
 
         int unitAssignmentId = w.Add("IFCUNITASSIGNMENT",
-            StepWriter.List(StepWriter.Ref(lengthUnitId), StepWriter.Ref(degreeUnitId), StepWriter.Ref(areaUnitId), StepWriter.Ref(volumeUnitId)));
+            StepWriter.List(StepWriter.Ref(lengthUnitId), StepWriter.Ref(angleUnitId), StepWriter.Ref(areaUnitId), StepWriter.Ref(volumeUnitId)));
 
         int originPointId = w.Add("IFCCARTESIANPOINT", StepWriter.List(StepWriter.Real(0), StepWriter.Real(0), StepWriter.Real(0)));
         int axisZId = w.Add("IFCDIRECTION", StepWriter.List(StepWriter.Real(0), StepWriter.Real(0), StepWriter.Real(1)));
@@ -1068,6 +1062,7 @@ public sealed partial class IfcModel
         }
 
         // 5D Cost Schedules & Cost Items (IFCCOSTSCHEDULE, IFCCOSTITEM, IFCAPPLIEDVALUE, IFCRELASSIGNSTOCONTROL, IFCRELNESTING)
+        int? costMetreId = LengthUnit == IfcLengthUnit.Metre ? lengthUnitId : null;
         foreach (var cs in CostSchedules)
         {
             string csGuid = cs.GlobalId ?? IfcGuid.NewGuid();
@@ -1112,7 +1107,10 @@ public sealed partial class IfcModel
                         "m" or "lm" => "IFCQUANTITYLENGTH",
                         _ => "IFCQUANTITYCOUNT"
                     };
-                    int qId = w.Add(qtyType, $"{StepWriter.Str("Quantity")},{StepWriter.Str(item.UnitBasis)},$,{StepWriter.Real(item.Quantity.Value)},$");
+                    string unit = qtyType == "IFCQUANTITYLENGTH"
+                        ? StepWriter.Ref(costMetreId ??= WriteLengthUnit(w, IfcLengthUnit.Metre)) : "$";
+                    string formula = Schema == IfcSchema.Ifc4 ? ",$" : "";
+                    int qId = w.Add(qtyType, $"{StepWriter.Str("Quantity")},{StepWriter.Str(item.UnitBasis)},{unit},{StepWriter.Real(item.Quantity.Value)}{formula}");
                     qtyValIds.Add(qId);
                 }
 
@@ -1353,7 +1351,7 @@ public sealed partial class IfcModel
         w.WriteTo(writer, fileName, schemaStr, viewDef, Application, Organization);
     }
 
-    private static void WritePropertyAndQuantitySets(StepWriter w, IfcElement element, int entityId, int ownerHistoryId)
+    private void WritePropertyAndQuantitySets(StepWriter w, IfcElement element, int entityId, int ownerHistoryId)
     {
         // Property sets
         if (element.PropertySets.Count > 0)
@@ -1387,6 +1385,7 @@ public sealed partial class IfcModel
         // Quantity sets
         if (element.QuantitySets.Count > 0)
         {
+            string formula = Schema == IfcSchema.Ifc4 ? ",$" : "";
             foreach (var qset in element.QuantitySets)
             {
                 var qIds = new List<int>();
@@ -1394,8 +1393,8 @@ public sealed partial class IfcModel
                 {
                     int qId = q switch
                     {
-                        IfcQuantityLength ql => w.Add("IFCQUANTITYLENGTH",
-                            $"{StepWriter.Str(ql.Name)},{StepWriter.Str(ql.Description)},$,{StepWriter.Real(ql.LengthValue)}"),
+                         IfcQuantityLength ql => w.Add("IFCQUANTITYLENGTH",
+                             $"{StepWriter.Str(ql.Name)},{StepWriter.Str(ql.Description)},$,{StepWriter.Real(ql.LengthValue)}{formula}"),
                         IfcQuantityArea qa => w.Add("IFCQUANTITYAREA",
                             $"{StepWriter.Str(qa.Name)},{StepWriter.Str(qa.Description)},$,{StepWriter.Real(qa.AreaValue)}"),
                         IfcQuantityVolume qv => w.Add("IFCQUANTITYVOLUME",
@@ -1422,7 +1421,10 @@ public sealed partial class IfcModel
     }
 
     /// <summary>Parses an existing IFC STEP file (.ifc or .ifczip) from disk into a structured model.</summary>
-    public static IfcModel Open(string path)
+    public static IfcModel Open(string path) => Open(path, options: null);
+
+    /// <summary>Parses an IFC file from disk with the specified read options.</summary>
+    public static IfcModel Open(string path, IfcReadOptions? options)
     {
         ArgumentNullException.ThrowIfNull(path);
         if (path.EndsWith(".ifczip", StringComparison.OrdinalIgnoreCase))
@@ -1433,24 +1435,30 @@ public sealed partial class IfcModel
                 ?? throw new InvalidDataException("The .ifczip archive does not contain an .ifc file.");
             using var stream = entry.Open();
             using var reader = new StreamReader(stream, Encoding.UTF8);
-            return Open(reader, Path.GetFileNameWithoutExtension(path));
+            return Open(reader, Path.GetFileNameWithoutExtension(path), options);
         }
 
         using var fileStream = File.OpenRead(path);
         using var fileReader = new StreamReader(fileStream, Encoding.UTF8);
-        return Open(fileReader, Path.GetFileNameWithoutExtension(path));
+        return Open(fileReader, Path.GetFileNameWithoutExtension(path), options);
     }
 
     /// <summary>Parses an existing IFC STEP physical file or stream into a structured model.</summary>
-    public static IfcModel Open(Stream stream, string? modelName = null)
+    public static IfcModel Open(Stream stream, string? modelName = null) => Open(stream, modelName, options: null);
+
+    /// <summary>Parses an IFC byte stream with the specified read options.</summary>
+    public static IfcModel Open(Stream stream, string? modelName, IfcReadOptions? options)
     {
         ArgumentNullException.ThrowIfNull(stream);
         using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 65536, leaveOpen: true);
-        return Open(reader, modelName);
+        return Open(reader, modelName, options);
     }
 
     /// <summary>Parses an existing IFC STEP stream into a structured model with storeys, elements, properties, and meshes.</summary>
-    public static IfcModel Open(TextReader reader, string? modelName = null)
+    public static IfcModel Open(TextReader reader, string? modelName = null) => Open(reader, modelName, options: null);
+
+    /// <summary>Parses an IFC text stream with the specified read options.</summary>
+    public static IfcModel Open(TextReader reader, string? modelName, IfcReadOptions? options)
     {
         ArgumentNullException.ThrowIfNull(reader);
 
@@ -1480,7 +1488,8 @@ public sealed partial class IfcModel
 
         // 1b. Units: geometry is kept in model length units. A unit without an IfcLengthUnit
         // counterpart (e.g. centimetres) is converted to metres while reading.
-        double? fileMetresPerUnit = ParseLengthUnit(step, projectEntity);
+        var assignment = step.Find(projectEntity?.GetRef(8)) ?? step.OfType("IFCUNITASSIGNMENT").FirstOrDefault();
+        double? fileMetresPerUnit = ParseProjectUnitFactor(step, assignment, ".LENGTHUNIT.");
         double geometryScale = 1.0;
         if (fileMetresPerUnit.HasValue)
         {
@@ -1488,6 +1497,12 @@ public sealed partial class IfcModel
             model.LengthUnit = knownUnit ?? IfcLengthUnit.Metre;
             if (knownUnit is null) geometryScale = fileMetresPerUnit.Value;
         }
+        double radiansPerAngleUnit = ParseProjectUnitFactor(step, assignment, ".PLANEANGLEUNIT.") ?? 1.0;
+        const double radiansPerDegree = Math.PI / 180.0;
+        model.AngleUnit = Math.Abs(radiansPerAngleUnit - radiansPerDegree) <= radiansPerDegree * 1e-6
+            ? IfcPlaneAngleUnit.Degree : IfcPlaneAngleUnit.Radian;
+        if (options?.LegacyIfcIoRevolvedAnglesInRadians == true)
+            radiansPerAngleUnit = 1.0;
 
         // 2. Parse Storeys
         var storeyMap = new Dictionary<int, IfcBuildingStorey>();
@@ -1613,6 +1628,11 @@ public sealed partial class IfcModel
 
                 if (qEnt.Type.Equals("IFCQUANTITYLENGTH", StringComparison.OrdinalIgnoreCase))
                 {
+                    double? metresPerQuantityUnit = qEnt.GetRef(2) is int unitId
+                        ? PositiveUnitFactor(step, step.Find(unitId), ".LENGTHUNIT.")
+                        : fileMetresPerUnit;
+                    if (metresPerQuantityUnit is double metres)
+                        val *= metres / model.LengthUnit.MetresPerUnit();
                     qset.AddLength(qName, val, qDesc);
                 }
                 else if (qEnt.Type.Equals("IFCQUANTITYAREA", StringComparison.OrdinalIgnoreCase))
@@ -1675,6 +1695,7 @@ public sealed partial class IfcModel
             step,
             geomToMaterialMap,
             IfcTransform.Scale(geometryScale).Multiply(ParseWorldCoordinateSystem(step)),
+            radiansPerAngleUnit,
             keepParametric: geometryScale == 1.0);
         var defaultStorey = model.Storeys[0];
         var allElementsMap = new Dictionary<int, IfcElement>();
@@ -2616,17 +2637,23 @@ public sealed partial class IfcModel
         int axisDirId = w.Add("IFCDIRECTION", StepWriter.List(StepWriter.Real(solid.Axis.Axis.X), StepWriter.Real(solid.Axis.Axis.Y), StepWriter.Real(solid.Axis.Axis.Z)));
         int axisPlacementId = w.Add("IFCAXIS1PLACEMENT", $"{StepWriter.Ref(axisLocPtId)},{StepWriter.Ref(axisDirId)}");
 
-        return w.Add("IFCREVOLVEDAREASOLID", $"{StepWriter.Ref(profileId)},{StepWriter.Ref(solidPlacementId)},{StepWriter.Ref(axisPlacementId)},{StepWriter.Real(solid.Angle)}");
+        double angle = AngleUnit == IfcPlaneAngleUnit.Degree ? solid.Angle * (180.0 / Math.PI) : solid.Angle;
+        string angleText = StepWriter.Real(angle);
+        if (angle > 0 && angleText == "0.")
+            angleText = angle.ToString("0.0##############E+0", CultureInfo.InvariantCulture);
+        return w.Add("IFCREVOLVEDAREASOLID", $"{StepWriter.Ref(profileId)},{StepWriter.Ref(solidPlacementId)},{StepWriter.Ref(axisPlacementId)},{angleText}");
     }
 
     /// <summary>State shared while reading product geometry: caches for placements and mapped representations.</summary>
-    private sealed class GeometryReadContext(StepFile step, Dictionary<int, IfcMaterial> geomToMaterialMap, IfcTransform root, bool keepParametric)
+    private sealed class GeometryReadContext(
+        StepFile step, Dictionary<int, IfcMaterial> geomToMaterialMap, IfcTransform root, double radiansPerAngleUnit, bool keepParametric)
     {
         public StepFile Step { get; } = step;
         public Dictionary<int, IfcMaterial> GeomToMaterialMap { get; } = geomToMaterialMap;
 
         /// <summary>Unit scale applied after the world coordinate system of the model context.</summary>
         public IfcTransform Root { get; } = root;
+        public double RadiansPerAngleUnit { get; } = radiansPerAngleUnit;
 
         /// <summary>False when geometry is rescaled to metres: parametric solids stay in file units and would disagree with LengthUnit.</summary>
         public bool KeepParametric { get; } = keepParametric;
@@ -2770,7 +2797,7 @@ public sealed partial class IfcModel
         if (mesh is not null) return mesh;
 
         // C/D. IFCEXTRUDEDAREASOLID / IFCREVOLVEDAREASOLID
-        var swept = ParseSweptSolid(step, itemEnt, meshName, out var extruded, out var revolved, out _);
+        var swept = ParseSweptSolid(step, itemEnt, meshName, ctx.RadiansPerAngleUnit, out var extruded, out var revolved, out _);
         if (swept is not null)
         {
             parametric = new ParametricBody(extruded, revolved, null);
@@ -2781,7 +2808,7 @@ public sealed partial class IfcModel
         if (itemEnt.Type.Equals("IFCBOOLEANRESULT", StringComparison.OrdinalIgnoreCase) ||
             itemEnt.Type.Equals("IFCBOOLEANCLIPPINGRESULT", StringComparison.OrdinalIgnoreCase))
         {
-            var boolRes = ParseBooleanResult(step, itemEnt);
+            var boolRes = ParseBooleanResult(step, itemEnt, ctx.RadiansPerAngleUnit);
             if (boolRes is null) return null;
             parametric = new ParametricBody(null, null, boolRes);
             return boolRes.ToMesh(meshName);
@@ -2809,6 +2836,7 @@ public sealed partial class IfcModel
     /// <param name="step">The STEP file that holds the solid and the entities it references.</param>
     /// <param name="ent">The IfcExtrudedAreaSolid or IfcRevolvedAreaSolid entity.</param>
     /// <param name="meshName">The name given to the returned mesh.</param>
+    /// <param name="radiansPerAngleUnit">Conversion from project plane angle units to radians.</param>
     /// <param name="extruded">The parametric extrusion, or null when the entity is not an extrusion or cannot be read.</param>
     /// <param name="revolved">The parametric revolution, or null when the entity is not a revolution or cannot be read.</param>
     /// <param name="fullPlacement">True when Position or the profile Position rotates, so the parametric form does not describe the mesh.</param>
@@ -2816,6 +2844,7 @@ public sealed partial class IfcModel
         StepFile step,
         StepEntity ent,
         string meshName,
+        double radiansPerAngleUnit,
         out IfcExtrudedAreaSolid? extruded,
         out IfcRevolvedAreaSolid? revolved,
         out bool fullPlacement)
@@ -2851,8 +2880,7 @@ public sealed partial class IfcModel
             return position.Multiply(shear).Multiply(profileRotation).ApplyTo(local);
         }
 
-        // Angle is read as radians, matching what IfcModel writes.
-        double angle = ent.GetReal(3) ?? (2.0 * Math.PI);
+        double angle = ent.GetReal(3) is double fileAngle ? fileAngle * radiansPerAngleUnit : 2.0 * Math.PI;
         var axis = ParseAxis1Placement(step, ent.GetRef(2));
         revolved = new IfcRevolvedAreaSolid(profile, angle, position.Origin, axis);
         if (!fullPlacement) return revolved.ToMesh(16, 24, meshName);
@@ -3035,26 +3063,56 @@ public sealed partial class IfcModel
         return new IfcVector3(Component(0), Component(1), Component(2));
     }
 
-    /// <summary>
-    /// Metres per length unit from the project's IfcUnitAssignment (SI or conversion-based unit).
-    /// Null when absent or unrecognised: LengthUnit then keeps its default, as before.
-    /// </summary>
-    private static double? ParseLengthUnit(StepFile step, StepEntity? project)
+    private static int WriteLengthUnit(StepWriter w, IfcLengthUnit unit) => unit switch
     {
-        var assignment = step.Find(project?.GetRef(8)) ?? step.OfType("IFCUNITASSIGNMENT").FirstOrDefault();
-        var unit = assignment?.GetRefList(0)
-            .Select(id => step.Find(id))
-            .FirstOrDefault(u => string.Equals(u?.GetRaw(1), ".LENGTHUNIT.", StringComparison.OrdinalIgnoreCase));
-        return ParseUnitFactor(step, unit, 0);
+        IfcLengthUnit.Millimetre => w.Add("IFCSIUNIT", "*,.LENGTHUNIT.,.MILLI.,.METRE."),
+        IfcLengthUnit.Metre => w.Add("IFCSIUNIT", "*,.LENGTHUNIT.,$,.METRE."),
+        IfcLengthUnit.Foot or IfcLengthUnit.Inch => WriteImperialLengthUnit(w, unit),
+        _ => throw new ArgumentOutOfRangeException(nameof(unit), unit, "Unsupported IFC length unit."),
+    };
+
+    private static int WriteImperialLengthUnit(StepWriter w, IfcLengthUnit unit)
+    {
+        int metre = w.Add("IFCSIUNIT", "*,.LENGTHUNIT.,$,.METRE.");
+        int dimensions = w.Add("IFCDIMENSIONALEXPONENTS", "1,0,0,0,0,0,0");
+        int factor = w.Add("IFCMEASUREWITHUNIT", $"IFCLENGTHMEASURE({StepWriter.Real(unit.MetresPerUnit())}),{StepWriter.Ref(metre)}");
+        string name = unit == IfcLengthUnit.Foot ? "FOOT" : "INCH";
+        return w.Add("IFCCONVERSIONBASEDUNIT", $"{StepWriter.Ref(dimensions)},.LENGTHUNIT.,'{name}',{StepWriter.Ref(factor)}");
     }
 
-    /// <summary>Factor of a named unit relative to its SI base unit.</summary>
-    private static double? ParseUnitFactor(StepFile step, StepEntity? unit, int depth)
+    private static int WritePlaneAngleUnit(StepWriter w, IfcPlaneAngleUnit unit)
     {
-        if (unit is null || depth > 8) return null;
+        int radianId = w.Add("IFCSIUNIT", "*,.PLANEANGLEUNIT.,$,.RADIAN.");
+        if (unit == IfcPlaneAngleUnit.Radian) return radianId;
+        if (unit != IfcPlaneAngleUnit.Degree)
+            throw new ArgumentOutOfRangeException(nameof(unit), unit, "Unsupported IFC plane angle unit.");
+        int dimensions = w.Add("IFCDIMENSIONALEXPONENTS", "0,0,0,0,0,0,0");
+        int factor = w.Add("IFCMEASUREWITHUNIT", $"IFCPLANEANGLEMEASURE({DegreeInRadians}),{StepWriter.Ref(radianId)}");
+        return w.Add("IFCCONVERSIONBASEDUNIT", $"{StepWriter.Ref(dimensions)},.PLANEANGLEUNIT.,'DEGREE',{StepWriter.Ref(factor)}");
+    }
+
+    /// <summary>Metres or radians per project length or plane angle unit. Null when absent or unrecognised.</summary>
+    private static double? ParseProjectUnitFactor(StepFile step, StepEntity? assignment, string unitType)
+    {
+        var unit = assignment?.GetRefList(0)
+            .Select(id => step.Find(id))
+            .FirstOrDefault(u => string.Equals(u?.GetRaw(1), unitType, StringComparison.OrdinalIgnoreCase));
+        return PositiveUnitFactor(step, unit, unitType);
+    }
+
+    private static double? PositiveUnitFactor(StepFile step, StepEntity? unit, string unitType) =>
+        ParseUnitFactor(step, unit, unitType, 0) is double value && double.IsFinite(value) && value > 0 ? value : null;
+
+    /// <summary>Factor of a named unit relative to its SI base unit.</summary>
+    private static double? ParseUnitFactor(StepFile step, StepEntity? unit, string unitType, int depth)
+    {
+        if (unit is null || depth > 8 || !string.Equals(unit.GetRaw(1), unitType, StringComparison.OrdinalIgnoreCase))
+            return null;
 
         if (unit.Type.Equals("IFCSIUNIT", StringComparison.OrdinalIgnoreCase))
         {
+            string baseUnit = unitType == ".LENGTHUNIT." ? ".METRE." : ".RADIAN.";
+            if (!string.Equals(unit.GetRaw(3), baseUnit, StringComparison.OrdinalIgnoreCase)) return null;
             return unit.GetRaw(2)?.Trim('.').ToUpperInvariant() switch
             {
                 null => 1.0,
@@ -3078,12 +3136,14 @@ public sealed partial class IfcModel
             };
         }
 
-        if (unit.Type.StartsWith("IFCCONVERSIONBASEDUNIT", StringComparison.OrdinalIgnoreCase))
+        if (unit.Type.Equals("IFCCONVERSIONBASEDUNIT", StringComparison.OrdinalIgnoreCase)
+            || unit.Type.Equals("IFCCONVERSIONBASEDUNITWITHOFFSET", StringComparison.OrdinalIgnoreCase) && unit.GetReal(4) == 0)
         {
             var measure = step.Find(unit.GetRef(3));
-            if (measure is null) return null;
-            if (!double.TryParse(ExtractNominalValue(measure.GetRaw(0)), NumberStyles.Float, CultureInfo.InvariantCulture, out double value)) return null;
-            return value * ParseUnitFactor(step, step.Find(measure.GetRef(1)), depth + 1);
+            if (measure is null || !measure.Type.Equals("IFCMEASUREWITHUNIT", StringComparison.OrdinalIgnoreCase)) return null;
+            if (!double.TryParse(ExtractNominalValue(measure.GetRaw(0)), NumberStyles.Float, CultureInfo.InvariantCulture, out double value)
+                || !double.IsFinite(value) || value <= 0) return null;
+            return value * ParseUnitFactor(step, step.Find(measure.GetRef(1)), unitType, depth + 1);
         }
 
         return null;
@@ -3215,7 +3275,7 @@ public sealed partial class IfcModel
         return null;
     }
 
-    private static IfcBooleanResult? ParseBooleanResult(StepFile step, StepEntity itemEnt)
+    private static IfcBooleanResult? ParseBooleanResult(StepFile step, StepEntity itemEnt, double radiansPerAngleUnit)
     {
         string? opStr = itemEnt.GetRaw(0);
         var op = IfcBooleanOperator.Difference;
@@ -3234,7 +3294,8 @@ public sealed partial class IfcModel
             var firstEnt = step.Find(firstOpId.Value);
             if (firstEnt is not null)
             {
-                var sweptMesh = ParseSweptSolid(step, firstEnt, "BooleanOperand", out var extruded, out var revolved, out bool fullPlacement);
+                var sweptMesh = ParseSweptSolid(step, firstEnt, "BooleanOperand", radiansPerAngleUnit,
+                    out var extruded, out var revolved, out bool fullPlacement);
                 if (sweptMesh is null)
                 {
                     boolResult.FirstMesh = ParseMeshEntity(step, firstEnt);

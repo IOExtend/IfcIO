@@ -362,6 +362,7 @@ public sealed class IfcRevolvedAreaSolid
     public IfcProfileDef Profile { get; set; }
     public IfcVector3 Position { get; set; } = IfcVector3.Zero;
     public IfcAxis1Placement Axis { get; set; } = new();
+    /// <summary>Sweep angle in radians, regardless of the model's IFC plane angle unit.</summary>
     public double Angle { get; set; } = 2.0 * Math.PI;
 
     public IfcRevolvedAreaSolid(IfcProfileDef profile, double angle = 2.0 * Math.PI, IfcVector3? position = null, IfcAxis1Placement? axis = null)

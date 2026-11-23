@@ -81,7 +81,8 @@ ifcio diff Baseline.ifc Revision.ifc -o changes.json --bcf changes.bcfzip
 ifcio view Building.ifc -o viewer.html --grids grids.xml
 ```
 
-Diagnostics and progress go to standard error. Run `ifcio --help` for the full list of options.
+Warnings and errors go to standard error. Reports and normal progress go to standard output.
+Grid XML options are available for `clash` and `view`, not `info`. Run `ifcio --help` for the full list of options.
 
 ## Library
 
@@ -89,14 +90,14 @@ Create an IFC4 model and save to STEP and glTF:
 
 ```csharp
 using IfcIO;
-using IfcIO.Geometry;
+using IfcIO.Model;
 using IfcIO.Schema;
 
 // Create a new IFC4 model
 var model = IfcModel.Create("Commercial Office", IfcSchema.Ifc4);
 var storey = model.AddStorey("Level 1", elevation: 0.0);
 
-// Add building element with geometry
+// Add a wall and its properties
 var wall = storey.AddWall("Exterior Wall 1");
 wall.PropertySets.Add(StandardPsets.WallCommon(loadBearing: true, fireRating: "REI 120"));
 
@@ -106,24 +107,27 @@ model.SaveZip("Building.ifczip");
 model.SaveGlb("Building.glb");
 ```
 
-High-level 4D scheduling and 5D cost planning via `IfcApi`:
+High-level 4D scheduling and 5D cost planning via `IfcApi`. This example opens the `Building.ifc` created above:
 
 ```csharp
+using System;
+using System.Linq;
 using IfcIO;
 using IfcIO.Api;
 
 var model = IfcModel.Open("Building.ifc");
-var wall = model.FindElementByName("Exterior Wall 1");
+var wall = model.AllElements.Single(element => element.Name == "Exterior Wall 1");
 
 // 4D construction schedule
 var schedule = IfcApi.Sequence.AddWorkSchedule(model, "Master Schedule");
-var task = IfcApi.Sequence.AddTask(model, schedule, "Wall Framing", new DateTime(2026, 2, 1), new DateTime(2026, 3, 1));
-IfcApi.Sequence.AssignProcess(task, wall!);
+var task = IfcApi.Sequence.AddTask(schedule, "Wall Framing",
+    start: new DateTime(2026, 2, 1), finish: new DateTime(2026, 3, 1));
+IfcApi.Sequence.AssignProcess(task, wall);
 
 // 5D cost breakdown
 var budget = IfcApi.Cost.AddCostSchedule(model, "Base Budget", currency: "USD");
 var costItem = IfcApi.Cost.AddCostItem(budget, "Masonry", unitRate: 150.0, quantity: 200.0);
-IfcApi.Cost.AssignCostControl(costItem, wall!);
+IfcApi.Cost.AssignCostControl(costItem, wall);
 
 model.Save("Building_4D_5D.ifc");
 ```

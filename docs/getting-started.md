@@ -176,3 +176,6 @@ ifcio diff Baseline.ifc Revision.ifc -o Changes.json --bcf RevisionChanges.bcfzi
 # Validate ISO 10303-21 STEP structure and export BCF issues
 ifcio validate Building.ifc --bcf Issues.bcfzip
 ```
+
+`validate` exits with code 1 if validation finds errors, cannot complete, or cannot write a requested BCF report.
+The model verdict is independent of report creation: a model can pass while its requested report fails to write.

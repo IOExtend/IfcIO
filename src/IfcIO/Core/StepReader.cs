@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 
 namespace IfcIO.Core;
 
@@ -19,7 +20,11 @@ public sealed class StepEntity
     public string? GetString(int index)
     {
         if (index < 0 || index >= Arguments.Count) return null;
-        string arg = Arguments[index];
+        return DecodeString(Arguments[index]);
+    }
+
+    internal static string? DecodeString(string arg)
+    {
         if (arg == "$" || arg == "*") return null;
         if (arg.StartsWith('\'') && arg.EndsWith('\'') && arg.Length >= 2)
         {
@@ -103,24 +108,15 @@ public sealed class StepEntity
         if (string.IsNullOrWhiteSpace(args)) return result;
 
         int depth = 0;
-        bool inQuotes = false;
+        var text = new StepStringState();
         int start = 0;
 
         for (int i = 0; i < args.Length; i++)
         {
             char c = args[i];
-            if (c == '\'')
-            {
-                if (inQuotes && i + 1 < args.Length && args[i + 1] == '\'')
-                {
-                    i++; // Skip escaped quote ''
-                }
-                else
-                {
-                    inQuotes = !inQuotes;
-                }
-            }
-            else if (!inQuotes)
+            if (text.InString || c == '\'')
+                text.Read(c);
+            else
             {
                 if (c == '(') depth++;
                 else if (c == ')') depth--;
@@ -147,6 +143,8 @@ public sealed class StepEntity
 public sealed class StepFile
 {
     public string? Description { get; set; }
+    /// <summary>All entries in the FILE_DESCRIPTION list, in their original order.</summary>
+    public IReadOnlyList<string> Descriptions { get; internal set; } = [];
     public string? ImplementationLevel { get; set; }
     public string? FileName { get; set; }
     public string? TimeStamp { get; set; }
@@ -154,6 +152,7 @@ public sealed class StepFile
     public string? Organization { get; set; }
     public string? PreprocessorVersion { get; set; }
     public string? OriginatingSystem { get; set; }
+    public string? Authorization { get; set; }
     public string? Schema { get; set; }
 
     public Dictionary<int, StepEntity> Entities { get; } = new(4096);
@@ -189,106 +188,123 @@ public static class StepReader
     public static StepFile Read(TextReader reader)
     {
         var file = new StepFile();
-        string? rawLine;
         bool inHeader = false;
         bool inData = false;
-
-        var statementBuilder = new System.Text.StringBuilder(256);
-
-        while ((rawLine = reader.ReadLine()) is not null)
+        var stringState = new StepStringState();
+        bool inComment = false;
+        bool commentStar = false;
+        bool possibleComment = false;
+        var statement = new StringBuilder(256);
+        // Physical line breaks are not characters in STEP. Do not trim a line:
+        // spaces can be significant when a string continues on the next line.
+        while (reader.ReadLine() is { } line)
         {
-            string line = rawLine.Trim();
-            if (line.Length == 0) continue;
-
-            if (line.StartsWith("HEADER;", StringComparison.OrdinalIgnoreCase))
+            foreach (char c in line)
             {
-                inHeader = true;
-                inData = false;
-                continue;
-            }
-
-            if (line.StartsWith("DATA;", StringComparison.OrdinalIgnoreCase))
-            {
-                inHeader = false;
-                inData = true;
-                continue;
-            }
-
-            if (line.StartsWith("ENDSEC;", StringComparison.OrdinalIgnoreCase))
-            {
-                inHeader = false;
-                inData = false;
-                statementBuilder.Clear();
-                continue;
-            }
-
-            if (inHeader)
-            {
-                ParseHeaderLine(line, file);
-            }
-            else if (inData)
-            {
-                statementBuilder.Append(line);
-                if (line.EndsWith(';'))
+                if (inComment)
                 {
-                    string fullStatement = statementBuilder.ToString();
-                    statementBuilder.Clear();
-                    ParseDataStatement(fullStatement, file);
+                    if (commentStar && c == '/')
+                        inComment = commentStar = false;
+                    else
+                        commentStar = c == '*';
+                    continue;
                 }
+                if (possibleComment)
+                {
+                    possibleComment = false;
+                    if (c == '*')
+                    {
+                        inComment = true;
+                        if (statement.Length != 0) statement.Append(' ');
+                        continue;
+                    }
+                    statement.Append('/');
+                }
+                if (stringState.InString || c == '\'')
+                    stringState.Read(c);
                 else
                 {
-                    statementBuilder.Append(' ');
+                    if (c == '/')
+                    {
+                        possibleComment = true;
+                        continue;
+                    }
+                    if (c == ';')
+                    {
+                        string text = statement.ToString().TrimEnd();
+                        statement.Clear();
+                        if (text.Equals("HEADER", StringComparison.OrdinalIgnoreCase))
+                            (inHeader, inData) = (true, false);
+                        else if (text.Equals("DATA", StringComparison.OrdinalIgnoreCase))
+                            (inHeader, inData) = (false, true);
+                        else if (text.Equals("ENDSEC", StringComparison.OrdinalIgnoreCase))
+                            (inHeader, inData) = (false, false);
+                        else if (inHeader)
+                            ParseHeaderStatement(text, file);
+                        else if (inData)
+                            ParseDataStatement(text, file);
+                        continue;
+                    }
+                    if (statement.Length == 0 && char.IsWhiteSpace(c)) continue;
                 }
+                statement.Append(c);
             }
         }
+
+        if (inComment)
+            throw new InvalidDataException("Unterminated STEP comment.");
+        if (stringState.InString)
+            throw new InvalidDataException("Unterminated STEP string.");
+        if (statement.Length != 0 || possibleComment || inHeader || inData)
+            throw new InvalidDataException("Incomplete STEP statement or section.");
 
         return file;
     }
 
-    private static void ParseHeaderLine(string line, StepFile file)
+    private static void ParseHeaderStatement(string statement, StepFile file)
     {
-        if (line.StartsWith("FILE_SCHEMA", StringComparison.OrdinalIgnoreCase))
+        int open = statement.IndexOf('(');
+        if (open <= 0 || !statement.EndsWith(')')) return;
+        var arguments = StepEntity.ParseArguments(statement[(open + 1)..^1]);
+        string? Scalar(int index) => index < arguments.Count ? StepEntity.DecodeString(arguments[index]) : null;
+        IEnumerable<string> Strings(int index)
         {
-            int q1 = line.IndexOf('\'');
-            if (q1 >= 0)
-            {
-                int q2 = line.IndexOf('\'', q1 + 1);
-                if (q2 > q1)
-                {
-                    file.Schema = line[(q1 + 1)..q2];
-                }
-            }
+            if (index < arguments.Count && arguments[index] is { Length: >= 2 } list
+                && list[0] == '(' && list[^1] == ')')
+                foreach (string item in StepEntity.ParseArguments(list[1..^1]))
+                    if (StepEntity.DecodeString(item) is { } decoded)
+                        yield return decoded;
         }
-        else if (line.StartsWith("FILE_DESCRIPTION", StringComparison.OrdinalIgnoreCase))
+        string? Names(int index)
         {
-            int q1 = line.IndexOf('\'');
-            if (q1 >= 0)
-            {
-                int q2 = line.IndexOf('\'', q1 + 1);
-                if (q2 > q1)
-                {
-                    file.Description = StepWriter.Unescape(line[(q1 + 1)..q2]);
-                }
-            }
+            string[] names = Strings(index).ToArray();
+            return names.Length == 0 ? null : string.Join(", ", names);
         }
-        else if (line.StartsWith("FILE_NAME", StringComparison.OrdinalIgnoreCase))
+
+        switch (statement[..open].TrimEnd().ToUpperInvariant())
         {
-            int q1 = line.IndexOf('\'');
-            if (q1 >= 0)
-            {
-                int q2 = line.IndexOf('\'', q1 + 1);
-                if (q2 > q1)
-                {
-                    file.FileName = StepWriter.Unescape(line[(q1 + 1)..q2]);
-                }
-            }
+            case "FILE_SCHEMA":
+                file.Schema = Strings(0).FirstOrDefault();
+                break;
+            case "FILE_DESCRIPTION":
+                file.Descriptions = Strings(0).ToArray();
+                file.Description = file.Descriptions.Count == 0 ? null : file.Descriptions[0];
+                file.ImplementationLevel = Scalar(1);
+                break;
+            case "FILE_NAME":
+                file.FileName = Scalar(0);
+                file.TimeStamp = Scalar(1);
+                file.Author = Names(2);
+                file.Organization = Names(3);
+                file.PreprocessorVersion = Scalar(4);
+                file.OriginatingSystem = Scalar(5);
+                file.Authorization = Scalar(6);
+                break;
         }
     }
 
     private static void ParseDataStatement(string statement, StepFile file)
     {
-        statement = statement.Trim();
-        if (statement.EndsWith(';')) statement = statement[..^1].Trim();
         if (!statement.StartsWith('#')) return;
 
         int eqIdx = statement.IndexOf('=');
@@ -314,5 +330,50 @@ public static class StepReader
             Type = type,
             RawArgs = rawArgs,
         };
+    }
+}
+
+/// <summary>Tracks whether separators belong to a STEP string. A quote used as the operand of \S\ is
+/// a byte to shift, not a string delimiter. The same rule is used for statements and argument lists.</summary>
+internal struct StepStringState
+{
+    private enum Directive { None, Start, ShiftSlash, ShiftByte, Page, Unicode, EndSlash }
+    private Directive _directive;
+    internal bool InString { get; private set; }
+
+    internal void Read(char c)
+    {
+        if (InString)
+        {
+            Directive pending = _directive;
+            _directive = Directive.None;
+            switch (pending)
+            {
+                case Directive.Start:
+                    switch (c)
+                    {
+                        case '\\': return;
+                        case 'S': _directive = Directive.ShiftSlash; return;
+                        case 'P': _directive = Directive.Page; return;
+                        case 'X': _directive = Directive.Unicode; return;
+                        case 'N' or 'F': _directive = Directive.EndSlash; return;
+                    }
+                    break;
+                case Directive.ShiftSlash when c == '\\':
+                    _directive = Directive.ShiftByte;
+                    return;
+                case Directive.ShiftByte when c is >= ' ' and <= '~':
+                    return;
+                case Directive.Page when c is >= 'A' and <= 'I':
+                case Directive.Unicode when c is '0' or '2' or '4':
+                    _directive = Directive.EndSlash;
+                    return;
+                case Directive.Unicode or Directive.EndSlash when c == '\\':
+                    return;
+            }
+            if (c == '\\') _directive = Directive.Start;
+        }
+        // Doubled apostrophes toggle twice; there is no separator between them.
+        if (c == '\'') InString = !InString;
     }
 }

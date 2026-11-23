@@ -156,16 +156,17 @@ public sealed class StepWriter
     }
 
     /// <summary>
-    /// Unescapes an ISO 10303-21 STEP string:
-    /// - '' and \\ converted to ' and \
-    /// - \X\HH converted to Latin-1 char
-    /// - \X2\HHHH...\X0\ converted to UTF-16 characters
+    /// Unescapes an ISO 10303-21 STEP string, including ISO 8859 page directives and
+    /// the two- and four-byte Unicode forms.
     /// </summary>
     public static string? Unescape(string escaped)
     {
         if (string.IsNullOrEmpty(escaped)) return string.Empty;
 
         var sb = new StringBuilder(escaped.Length);
+        Encoding page = Encoding.Latin1;
+        Span<byte> pageByte = stackalloc byte[1];
+        Span<char> pageChar = stackalloc char[1];
         for (int i = 0; i < escaped.Length; i++)
         {
             char c = escaped[i];
@@ -183,12 +184,42 @@ public sealed class StepWriter
             }
             else if (c == '\\')
             {
-                if (escaped.AsSpan(i).StartsWith("\\\\", StringComparison.Ordinal))
+                ReadOnlySpan<char> suffix = escaped.AsSpan(i);
+                if (suffix.StartsWith("\\\\", StringComparison.Ordinal))
                 {
                     sb.Append('\\');
                     i++;
                 }
-                else if (escaped.AsSpan(i).StartsWith("\\X\\", StringComparison.Ordinal))
+                else if (suffix.StartsWith("\\N\\", StringComparison.Ordinal)
+                    || suffix.StartsWith("\\F\\", StringComparison.Ordinal))
+                {
+                    i += 2;
+                }
+                else if (suffix.Length >= 4 && suffix[1] == 'P' && suffix[2] is >= 'A' and <= 'I' && suffix[3] == '\\')
+                {
+                    var encoding = suffix[2] == 'A' ? Encoding.Latin1
+                        : CodePagesEncodingProvider.Instance.GetEncoding(28591 + suffix[2] - 'A',
+                            EncoderFallback.ExceptionFallback, DecoderFallback.ExceptionFallback);
+                    if (encoding is not null) page = encoding;
+                    else sb.Append(suffix[..4]);
+                    i += 3;
+                }
+                else if (suffix.StartsWith("\\S\\", StringComparison.Ordinal) && suffix.Length >= 4
+                    && suffix[3] is >= ' ' and <= '~')
+                {
+                    pageByte[0] = (byte)(suffix[3] + 128);
+                    try
+                    {
+                        int read = page.GetChars(pageByte, pageChar);
+                        sb.Append(pageChar[..read]);
+                    }
+                    catch (DecoderFallbackException)
+                    {
+                        sb.Append(suffix[..4]);
+                    }
+                    i += 3;
+                }
+                else if (suffix.StartsWith("\\X\\", StringComparison.Ordinal))
                 {
                     if (i + 5 <= escaped.Length &&
                         byte.TryParse(escaped.AsSpan(i + 3, 2), NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out byte latin1))
@@ -201,19 +232,19 @@ public sealed class StepWriter
                         sb.Append(c);
                     }
                 }
-                else if (escaped.AsSpan(i).StartsWith("\\X2\\", StringComparison.Ordinal))
+                else if (suffix.Length >= 4 && suffix[1] == 'X' && suffix[2] is '2' or '4' && suffix[3] == '\\')
                 {
-                    int end = escaped.IndexOf("\\X0\\", i + 4, StringComparison.Ordinal);
-                    if (end > 0 && (end - i - 4) % 4 == 0)
+                    int end = suffix[4..].IndexOf('\\');
+                    if (end >= 0 && suffix[(end + 4)..].StartsWith("\\X0\\", StringComparison.Ordinal))
                     {
-                        for (int k = i + 4; k < end; k += 4)
+                        int length = end + 8;
+                        int checkpoint = sb.Length;
+                        if (!AppendExtended(suffix.Slice(4, end), suffix[2] == '2' ? 4 : 8, sb))
                         {
-                            if (ushort.TryParse(escaped.AsSpan(k, 4), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out ushort unit))
-                            {
-                                sb.Append((char)unit);
-                            }
+                            sb.Length = checkpoint;
+                            sb.Append(suffix[..length]);
                         }
-                        i = end + 3;
+                        i += length - 1;
                     }
                     else
                     {
@@ -232,5 +263,28 @@ public sealed class StepWriter
         }
 
         return sb.ToString();
+    }
+
+    private static bool AppendExtended(ReadOnlySpan<char> hex, int digits, StringBuilder output)
+    {
+        if (hex.IsEmpty || hex.Length % digits != 0) return false;
+        Span<char> scalar = stackalloc char[2];
+        for (int i = 0; i < hex.Length; i += digits)
+        {
+            if (!int.TryParse(hex.Slice(i, digits), NumberStyles.AllowHexSpecifier,
+                CultureInfo.InvariantCulture, out int value)) return false;
+            if (digits == 4)
+            {
+                // Some STEP writers, including ours, use X2 for UTF-16 surrogate pairs.
+                output.Append((char)value);
+            }
+            else if (Rune.TryCreate(value, out Rune rune))
+            {
+                int written = rune.EncodeToUtf16(scalar);
+                output.Append(scalar[..written]);
+            }
+            else return false;
+        }
+        return true;
     }
 }

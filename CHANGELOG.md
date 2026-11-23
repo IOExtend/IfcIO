@@ -4,6 +4,15 @@ All notable changes to the `IfcIO` library are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- `ifcio validate` returns a non-zero exit code if model validation cannot complete or a requested BCF report cannot
+  be written. The model verdict and report-writing errors are reported separately.
+- `ifcio` documents the schedule, cost, viewer and grid options on the commands that accept them, sends validation
+  diagnostics to standard error, and rejects invalid `patch --offset` values and missing grid inputs.
+- `StepReader` splits statements outside quoted strings and comments rather than at physical lines. It reads multiline
+  headers and strings, keeps significant spaces, and reports incomplete statements.
+- STEP strings decode ISO 8859 page switches and shifted bytes, and four-byte Unicode escapes.
+
 ## [0.11.1] - 2026-11-13
 
 ### Fixed
@@ -104,7 +113,7 @@ All notable changes to the `IfcIO` library are documented in this file.
 - **CLI Enhancements (`IfcIO.Cli`)**:
   - `ifcio clash`: added `--group <proximity|element|storey|grid>`, `--radius <meters>`, and `--grids <grids.xml>`.
   - `ifcio patch`: added `--recipe <migrate|scale|offset|purge|reset>`, `--scale <factor>`, and `--migrate <schema>`.
-  - `ifcio view`, `ifcio info`: added `--grids <grids.xml>` and `--export-grids <out.xml>`.
+  - `ifcio view`: added `--grids <grids.xml>` and `--export-grids <out.xml>`. These options are not available in `ifcio info`.
 
 ## [0.8.0] - 2026-11-10
 

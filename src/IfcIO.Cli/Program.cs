@@ -19,7 +19,7 @@ public static class Program
 
         if (args[0] is "-v" or "--version" or "version")
         {
-            var version = typeof(Program).Assembly.GetName().Version?.ToString(3) ?? "0.5.0";
+            var version = typeof(Program).Assembly.GetName().Version?.ToString(3) ?? "unknown";
             Console.WriteLine($"IfcIO.Cli v{version} (.NET {Environment.Version})");
             return 0;
         }
@@ -104,9 +104,14 @@ Patch Options:
   --extract <query>     Extract matching elements into a separate IFC model
   -o, --output <path>   Output file path for patched IFC model
 
+Schedule, Cost & View Options:
+  --sim-date <date>     Simulate schedule progress on a date (schedule only, YYYY-MM-DD)
+  --export-csv <path>   Export schedule or cost data to CSV (schedule and cost)
+  --title <title>       Set the HTML page title (view only)
+
 Options:
-  --grids <path.xml>    Load spatial grid system from XML (.xml)
-  --export-grids <path> Export extracted or loaded grid system to XML (.xml)
+  --grids <path.xml>    Load a spatial grid system from XML (clash and view)
+  --export-grids <path> Export the extracted or loaded grid system to XML (clash and view)
   --glb <path>          Output binary glTF 2.0 file (.glb)
   --obj <path>          Output Wavefront OBJ file (.obj)
   --ifc <path>          Output IFC STEP physical file (.ifc)
@@ -158,6 +163,13 @@ Examples:
         if (!File.Exists(inputPath))
         {
             Console.Error.WriteLine($"Error: File '{inputPath}' not found.");
+            return 1;
+        }
+
+        if (args.Skip(1).Any(arg => arg.Equals("--grids", StringComparison.OrdinalIgnoreCase)
+            || arg.Equals("--export-grids", StringComparison.OrdinalIgnoreCase)))
+        {
+            Console.Error.WriteLine("Error: --grids and --export-grids are supported by clash and view, not info.");
             return 1;
         }
 
@@ -426,6 +438,14 @@ Examples:
             return 1;
         }
 
+        string? bcfPath = GetOptionValue(args, "--bcf");
+        if (args.Skip(1).Contains("--bcf", StringComparer.OrdinalIgnoreCase)
+            && (string.IsNullOrWhiteSpace(bcfPath) || bcfPath.StartsWith("--", StringComparison.Ordinal)))
+        {
+            Console.Error.WriteLine("Error: --bcf requires an output file path.");
+            return 1;
+        }
+
         Console.WriteLine($"Validating ISO 10303-21 structure for '{Path.GetFileName(inputPath)}'...");
         var sw = Stopwatch.StartNew();
 
@@ -443,7 +463,7 @@ Examples:
                 if (entry is null)
                 {
                     Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine("  [ERROR] Archive does not contain an .ifc file.");
+                    Console.Error.WriteLine("  [ERROR] Archive does not contain an .ifc file.");
                     Console.ResetColor();
                     return 1;
                 }
@@ -459,7 +479,7 @@ Examples:
         catch (Exception ex)
         {
             Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine($"  [ERROR] Failed to parse STEP syntax: {ex.Message}");
+            Console.Error.WriteLine($"  [ERROR] Failed to parse STEP syntax: {ex.Message}");
             Console.ResetColor();
             return 1;
         }
@@ -468,7 +488,7 @@ Examples:
         if (string.IsNullOrEmpty(step.Schema))
         {
             Console.ForegroundColor = ConsoleColor.Yellow;
-            Console.WriteLine("  [WARN] FILE_SCHEMA header declaration is missing.");
+            Console.Error.WriteLine("  [WARN] FILE_SCHEMA header declaration is missing.");
             Console.ResetColor();
             warnings++;
         }
@@ -482,14 +502,14 @@ Examples:
         if (projects.Count == 0)
         {
             Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine("  [ERROR] Model contains no IFCPROJECT entity.");
+            Console.Error.WriteLine("  [ERROR] Model contains no IFCPROJECT entity.");
             Console.ResetColor();
             errors++;
         }
         else if (projects.Count > 1)
         {
             Console.ForegroundColor = ConsoleColor.Yellow;
-            Console.WriteLine($"  [WARN] Multiple IFCPROJECT entities found ({projects.Count}). Expected exactly 1.");
+            Console.Error.WriteLine($"  [WARN] Multiple IFCPROJECT entities found ({projects.Count}). Expected exactly 1.");
             Console.ResetColor();
             warnings++;
         }
@@ -504,23 +524,24 @@ Examples:
         Console.WriteLine($"  ✓ Geometry items: {brepCount} FacetedBRep, {tessCount} TriangulatedFaceSet");
 
         // 4. In-depth model rules validation
+        IfcModel model;
         try
         {
-            var model = IfcModel.Open(inputPath);
+            model = IfcModel.Open(inputPath);
             var valResult = model.Validate();
             foreach (var issue in valResult.Issues)
             {
                 if (issue.Severity == Validation.IfcIssueSeverity.Error)
                 {
                     Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine($"  [ERROR] ({issue.RuleId}) {(issue.EntityName is not null ? $"{issue.EntityName}: " : "")}{issue.Message}");
+                    Console.Error.WriteLine($"  [ERROR] ({issue.RuleId}) {(issue.EntityName is not null ? $"{issue.EntityName}: " : "")}{issue.Message}");
                     Console.ResetColor();
                     errors++;
                 }
                 else if (issue.Severity == Validation.IfcIssueSeverity.Warning)
                 {
                     Console.ForegroundColor = ConsoleColor.Yellow;
-                    Console.WriteLine($"  [WARN] ({issue.RuleId}) {(issue.EntityName is not null ? $"{issue.EntityName}: " : "")}{issue.Message}");
+                    Console.Error.WriteLine($"  [WARN] ({issue.RuleId}) {(issue.EntityName is not null ? $"{issue.EntityName}: " : "")}{issue.Message}");
                     Console.ResetColor();
                     warnings++;
                 }
@@ -528,47 +549,77 @@ Examples:
         }
         catch (Exception ex)
         {
-            Console.ForegroundColor = ConsoleColor.Yellow;
-            Console.WriteLine($"  [WARN] High-level ingestion warning: {ex.Message}");
-            Console.ResetColor();
+            Console.Error.WriteLine($"  [ERROR] Model validation could not complete: {ex.Message}");
+            return 1;
         }
 
         sw.Stop();
         Console.WriteLine();
-
-        string? bcfPath = GetOptionValue(args, "--bcf");
-        if (!string.IsNullOrEmpty(bcfPath))
-        {
-            try
-            {
-                var model = IfcModel.Open(inputPath);
-                model.ExportValidationBcf(bcfPath);
-                Console.ForegroundColor = ConsoleColor.Cyan;
-                Console.WriteLine($"  ✓ Exported validation issues to BCF 2.1: '{bcfPath}'");
-                Console.ResetColor();
-            }
-            catch (Exception ex)
-            {
-                Console.ForegroundColor = ConsoleColor.Yellow;
-                Console.WriteLine($"  [WARN] Failed to export BCF issues: {ex.Message}");
-                Console.ResetColor();
-            }
-        }
 
         if (errors == 0)
         {
             Console.ForegroundColor = ConsoleColor.Green;
             Console.WriteLine($"Validation PASSED ({warnings} warnings, {step.Entities.Count:N0} entities checked) in {sw.ElapsedMilliseconds} ms.");
             Console.ResetColor();
-            return 0;
         }
         else
         {
             Console.ForegroundColor = ConsoleColor.Red;
             Console.WriteLine($"Validation FAILED with {errors} errors and {warnings} warnings.");
             Console.ResetColor();
-            return 1;
         }
+
+        if (bcfPath is not null)
+        {
+            try
+            {
+                WriteValidationBcf(model, inputPath, bcfPath);
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                Console.WriteLine($"  ✓ Exported validation issues to BCF 2.1: '{bcfPath}'");
+                Console.ResetColor();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"  [ERROR] Failed to write the requested BCF report '{bcfPath}': {ex.Message}");
+                return 1;
+            }
+        }
+
+        return errors == 0 ? 0 : 1;
+    }
+
+    private static void WriteValidationBcf(IfcModel model, string inputPath, string outputPath)
+    {
+        string destination = Path.GetFullPath(outputPath);
+        string directory = Path.GetDirectoryName(destination)
+            ?? throw new IOException("The BCF destination must be a file path.");
+        string source = Path.GetFullPath(inputPath);
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        if (PhysicalPath(source).Equals(PhysicalPath(destination), comparison))
+            throw new IOException("The BCF destination cannot be the input IFC file.");
+
+        Directory.CreateDirectory(directory);
+        string temporary = Path.Combine(directory, Path.GetRandomFileName());
+        try
+        {
+            model.ExportValidationBcf(temporary);
+            // Moving into place does not truncate a pre-existing destination or follow file links.
+            File.Move(temporary, destination, overwrite: true);
+        }
+        finally
+        {
+            File.Delete(temporary);
+        }
+    }
+
+    private static string PhysicalPath(string path)
+    {
+        string? parent = Path.GetDirectoryName(path);
+        if (parent is null) return path;
+        string candidate = Path.Combine(PhysicalPath(parent), Path.GetFileName(path));
+        FileSystemInfo? target = Directory.Exists(candidate) ? Directory.ResolveLinkTarget(candidate, returnFinalTarget: true)
+            : File.Exists(candidate) ? File.ResolveLinkTarget(candidate, returnFinalTarget: true) : null;
+        return target is null ? candidate : target.FullName;
     }
 
     private static string? GetOptionValue(string[] args, string optionName)
@@ -656,6 +707,21 @@ Examples:
         string? scaleStr = GetOptionValue(args, "--scale");
         string? schemaStr = GetOptionValue(args, "--migrate") ?? (string.Equals(recipe, "migrate", StringComparison.OrdinalIgnoreCase) ? GetOptionValue(args, "--schema") : null);
 
+        Geometry.IfcVector3? manualOffset = null;
+        if (args.Contains("--offset", StringComparer.OrdinalIgnoreCase))
+        {
+            var parts = offsetStr?.Split(',');
+            if (parts is not { Length: 3 }
+                || !TryParseFiniteDouble(parts[0], out double x)
+                || !TryParseFiniteDouble(parts[1], out double y)
+                || !TryParseFiniteDouble(parts[2], out double z))
+            {
+                Console.Error.WriteLine("Error: --offset requires three finite numbers in X,Y,Z format.");
+                return 1;
+            }
+            manualOffset = new Geometry.IfcVector3(x, y, z);
+        }
+
         var sw = Stopwatch.StartNew();
         var model = IfcModel.Open(inputPath);
 
@@ -683,17 +749,10 @@ Examples:
             }
         }
 
-        if (!string.IsNullOrEmpty(offsetStr))
+        if (manualOffset is { } translation)
         {
-            var parts = offsetStr.Split(',');
-            if (parts.Length == 3 &&
-                double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out double ox) &&
-                double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out double oy) &&
-                double.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out double oz))
-            {
-                model.OffsetCoordinates(new Geometry.IfcVector3(ox, oy, oz));
-                Console.WriteLine($"  * Applied manual offset: ({ox:F3}, {oy:F3}, {oz:F3}) m.");
-            }
+            model.OffsetCoordinates(translation);
+            Console.WriteLine($"  * Applied manual offset: ({translation.X:F3}, {translation.Y:F3}, {translation.Z:F3}) m.");
         }
 
         if (!string.IsNullOrEmpty(scaleStr) && double.TryParse(scaleStr, NumberStyles.Float, CultureInfo.InvariantCulture, out double scaleFactor))
@@ -717,6 +776,9 @@ Examples:
         Console.ResetColor();
         return 0;
     }
+
+    private static bool TryParseFiniteDouble(string value, out double result) =>
+        double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out result) && double.IsFinite(result);
 
     private static int ExecuteValidateIds(string[] args)
     {
@@ -886,15 +948,35 @@ Examples:
 
     private static int ExecuteClash(string[] args)
     {
-        var nonOptions = args.Where(a => !a.StartsWith('-')).ToList();
-        if (nonOptions.Count == 0)
+        var inputs = new List<string>(2);
+        for (int i = 0; i < args.Length; i++)
         {
-            Console.Error.WriteLine("Error: clash command requires at least one input IFC file.");
+            string token = args[i];
+            if (!token.StartsWith('-'))
+            {
+                inputs.Add(token);
+                continue;
+            }
+            if (token.ToLowerInvariant() is not ("--tolerance" or "--selector-a" or "--selector-b" or "--grids"
+                or "--group" or "--clash-group" or "--radius" or "--clash-radius" or "--export-grids" or "-o" or "--output" or "--bcf"))
+            {
+                Console.Error.WriteLine($"Error: Unknown clash option '{token}'.");
+                return 1;
+            }
+            if (++i == args.Length || args[i].StartsWith('-') || string.IsNullOrWhiteSpace(args[i]))
+            {
+                Console.Error.WriteLine($"Error: {token} requires a value.");
+                return 1;
+            }
+        }
+        if (inputs.Count is < 1 or > 2)
+        {
+            Console.Error.WriteLine("Error: clash requires one or two input IFC files.");
             return 1;
         }
 
-        string fileA = nonOptions[0];
-        string? fileB = nonOptions.Count > 1 ? nonOptions[1] : null;
+        string fileA = inputs[0];
+        string? fileB = inputs.Count == 2 ? inputs[1] : null;
 
         if (!File.Exists(fileA))
         {
@@ -906,6 +988,8 @@ Examples:
             Console.Error.WriteLine($"Error: Input file '{fileB}' does not exist.");
             return 1;
         }
+
+        if (!TryGetGridPath(args, out string? gridsPath)) return 1;
 
         double tol = 0.001;
         string? tolStr = GetOptionValue(args, "--tolerance");
@@ -933,8 +1017,7 @@ Examples:
             report = modelA.DetectClashes(options);
         }
 
-        string? gridsPath = GetOptionValue(args, "--grids");
-        if (!string.IsNullOrEmpty(gridsPath) && File.Exists(gridsPath))
+        if (gridsPath is not null)
         {
             var gridSystem = Grids.IfcGridSystem.LoadXml(gridsPath);
             modelA.GridSystem = gridSystem;
@@ -1078,14 +1161,16 @@ Examples:
             return 1;
         }
 
+        if (!TryGetGridPath(args, out string? gridsPath)
+            || !TryGetPathOption(args, "--export-grids", out string? exportGridsPath)) return 1;
+
         string outPath = GetOptionValue(args, "-o") ?? GetOptionValue(args, "--output") ?? Path.ChangeExtension(inputPath, ".html");
         string title = GetOptionValue(args, "--title") ?? Path.GetFileNameWithoutExtension(inputPath);
 
         var sw = Stopwatch.StartNew();
         var model = IfcModel.Open(inputPath);
 
-        string? gridsPath = GetOptionValue(args, "--grids");
-        if (!string.IsNullOrEmpty(gridsPath) && File.Exists(gridsPath))
+        if (gridsPath is not null)
         {
             model.GridSystem = Grids.IfcGridSystem.LoadXml(gridsPath);
         }
@@ -1094,8 +1179,7 @@ Examples:
             model.ExtractGridSystem();
         }
 
-        string? exportGridsPath = GetOptionValue(args, "--export-grids");
-        if (!string.IsNullOrEmpty(exportGridsPath))
+        if (exportGridsPath is not null)
         {
             var grids = model.GridSystem ?? model.ExtractGridSystem();
             grids.SaveXml(exportGridsPath);
@@ -1109,6 +1193,23 @@ Examples:
         Console.WriteLine($"3D WebGL HTML viewer exported to '{outPath}' in {sw.ElapsedMilliseconds} ms.");
         Console.ResetColor();
         return 0;
+    }
+
+    private static bool TryGetGridPath(string[] args, out string? path)
+    {
+        if (!TryGetPathOption(args, "--grids", out path)) return false;
+        if (path is null || File.Exists(path)) return true;
+        Console.Error.WriteLine($"Error: Grid file '{path}' does not exist.");
+        return false;
+    }
+
+    private static bool TryGetPathOption(string[] args, string option, out string? path)
+    {
+        path = GetOptionValue(args, option);
+        if (!args.Contains(option, StringComparer.OrdinalIgnoreCase)) return true;
+        if (!string.IsNullOrWhiteSpace(path) && !path.StartsWith('-')) return true;
+        Console.Error.WriteLine($"Error: {option} requires a file path.");
+        return false;
     }
 
     private static int ExecuteSchedule(string[] args)
@@ -1126,6 +1227,18 @@ Examples:
             return 1;
         }
 
+        string? simDateStr = GetOptionValue(args, "--sim-date");
+        DateTime? simDate = null;
+        if (args.Contains("--sim-date", StringComparer.OrdinalIgnoreCase))
+        {
+            if (!DateTime.TryParse(simDateStr, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var parsedDate))
+            {
+                Console.Error.WriteLine("Error: --sim-date requires a date (YYYY-MM-DD).");
+                return 1;
+            }
+            simDate = parsedDate;
+        }
+
         var model = IfcModel.Open(inputPath);
         if (model.WorkSchedules.Count == 0)
         {
@@ -1136,13 +1249,6 @@ Examples:
         Console.ForegroundColor = ConsoleColor.Cyan;
         Console.WriteLine($"4D Construction Work Schedules: {model.WorkSchedules.Count} schedule(s)");
         Console.ResetColor();
-
-        string? simDateStr = GetOptionValue(args, "--sim-date");
-        DateTime? simDate = null;
-        if (!string.IsNullOrEmpty(simDateStr) && DateTime.TryParse(simDateStr, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var parsedDate))
-        {
-            simDate = parsedDate;
-        }
 
         foreach (var ws in model.WorkSchedules)
         {

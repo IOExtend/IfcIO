@@ -4,45 +4,46 @@ title: Public API
 
 # Public API Surface
 
-The `IfcIO` package is the supported surface listed here.
+This page summarizes the public types and entry points of the `IfcIO` package.
 
 ## Core Model & Hierarchy
 
 | Type | Description |
 |---|---|
-| `IfcModel` | Central model container managing spatial hierarchy (Project, Site, Building, Storey), elements, materials, property sets, and geometry representations. Opens and writes `.ifc` and `.ifczip` files. |
+| `IfcModel` | Model container with project and building names, storeys, materials, and type products. `AllElements` enumerates elements across storeys. `Open`, `Save`, and `SaveZip` handle `.ifc` and `.ifczip`. |
 | `IfcElement` | Base BIM product element representing walls, slabs, columns, beams, doors, windows, pipes, ducts, and generic components. |
-| `IfcStorey`, `IfcBuilding`, `IfcSite`, `IfcProject` | Spatial structure hierarchy components with coordinates, elevations, and relationships. |
+| `IfcBuildingStorey`, `IfcSpace` | Storeys hold elements and spaces and carry elevations. The model does not expose separate `IfcSite`, `IfcBuilding`, or `IfcProject` objects. |
 | `IfcGuid` | buildingSMART 22-character compressed GlobalId encoder/decoder with bidirectional conversion to 128-bit .NET `Guid`. |
 
 ## Geometry & Representation
 
 | Type | Description |
 |---|---|
-| `IfcMeshGeometry` | 3D polygonal triangle mesh data structure holding double-precision vertices, normals, and face index buffers. |
-| `IfcTriangulatedFaceSet` | Modern IFC4 compact tessellation geometry generator (`IfcCartesianPointList3D`). |
-| `IfcFacetedBrep` | Standard IFC2x3 faceted boundary representation (`IfcClosedShell`, `IfcFace`, `IfcPolyLoop`). |
-| `IfcProfileDef` | 2D parametric profile definitions (rectangle, circle, I-shape, L-shape, composite). |
+| `IfcMesh` | Triangle mesh with double-precision vertices, triangle indices, and a bounding box. |
+| `IfcModel.UseTessellationInIfc4` | Controls whether mesh export uses the STEP entity `IFCTRIANGULATEDFACESET` in IFC4. Meshes can also be written as `IFCFACETEDBREP`. These are STEP entity names, not public .NET types. |
+| `IfcProfileDef` | Base type for rectangular, circular, arbitrary closed polygon, I-, L-, and U-shaped profiles. |
+| `IfcExtrudedAreaSolid` | Extrudes a profile and exposes a triangulated mesh through `ToMesh`. |
 
 ## Import & Export
 
 | Type | Description |
 |---|---|
-| `StepReader` | Low-level ISO 10303-21 STEP physical file parser supporting multi-line statements and quote escapes. |
-| `StepWriter` | High-throughput ISO 10303-21 STEP physical file serializer. |
+| `StepReader`, `StepFile`, `StepEntity` | Read and inspect STEP headers and entity records. Model interpretation is handled by `IfcModel.Open`. |
+| `StepWriter` | Writes STEP headers and entity records. |
 | `IfcGlbExporter` | Binary glTF 2.0 exporter generating specification-compliant `.glb` files with PBR materials. |
 | `IfcObjExporter` | Wavefront OBJ geometry exporter with MTL material library generation. |
-| `IfcZipArchive` | Pure managed PKZip container compression and decompression for `.ifczip` files. |
 
 ## Coordination & Validation
 
 | Type | Description |
 |---|---|
-| `IfcClashDetector` | Broad-phase spatial index and narrow-phase Möller triangle collision engine for IFC models. |
+| `IfcClashDetector` | Checks candidate element pairs with axis-aligned bounding boxes, then tests triangles for intersection. It does not use a spatial index. |
 | `IfcDiffEngine` | Revision comparison engine detecting added, deleted, and modified IFC elements and geometry shifts. |
-| `IfcValidator` | Structural STEP syntax and buildingSMART schema conformance validator. |
-| `IfcBcfExporter` | buildingSMART BIM Collaboration Format (BCF 2.1 `.bcfzip`) issue and viewpoint generator. |
+| `IfcValidator` | Runs the implemented model validation rules and structural checks on parsed STEP records. It is not a complete IFC schema conformance validator. |
+| `BcfZipExporter` | Reads and writes buildingSMART BCF 2.1 issue archives. |
 | `BcfArchive` | Bidirectional BCF 2.1 archive container for reading, querying, editing, and saving `.bcfzip` files. |
+
+The viewer and coordination APIs are maintained for compatibility; see [scope and frozen features](https://github.com/IOExtend/IfcIO#scope-and-frozen-features).
 
 ## 4D Construction Sequencing & Temporal Simulation
 

@@ -191,6 +191,8 @@ public static class IfcPatch
             LengthUnit = source.LengthUnit,
             AngleUnit = source.AngleUnit,
             Schema = source.Schema,
+            SourceSchemaIdentifier = source.SourceSchemaIdentifier,
+            UnsupportedPlacementCount = source.UnsupportedPlacementCount,
         };
         target.Storeys.Clear();
 
@@ -237,6 +239,9 @@ public static class IfcPatch
         {
             return modelList[0];
         }
+
+        if (modelList.Any(model => model.IsIfc4x3Subset))
+            throw new NotSupportedException("Merging IFC4X3 models is not supported because their import is limited to a subset.");
 
         var baseModel = modelList[0];
         var merged = new IfcModel
@@ -344,6 +349,9 @@ public static class IfcPatch
     public static void MigrateSchema(IfcModel model, IfcSchema targetSchema)
     {
         ArgumentNullException.ThrowIfNull(model);
+        model.EnsureWritableSchema();
+        if (targetSchema is not (IfcSchema.Ifc2x3 or IfcSchema.Ifc4))
+            throw new NotSupportedException($"Migrating to IFC schema '{targetSchema}' is not supported.");
         model.Schema = targetSchema;
         if (targetSchema == IfcSchema.Ifc4)
         {

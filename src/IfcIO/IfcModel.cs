@@ -18,6 +18,12 @@ public sealed partial class IfcModel
     private const string DegreeInRadians = "0.017453292519943278";
 
     public IfcSchema Schema { get; set; } = IfcSchema.Ifc2x3;
+    /// <summary>The exact FILE_SCHEMA identifier of the source file, or null for a new model.</summary>
+    public string? SourceSchemaIdentifier { get; internal set; }
+
+    internal bool IsIfc4x3Subset => Schema == IfcSchema.Ifc4x3 || IsIfc4x3Identifier(SourceSchemaIdentifier);
+    /// <summary>Number of IFC4X3 product representations or ports omitted because their placement is unsupported.</summary>
+    public int UnsupportedPlacementCount { get; internal set; }
     public IfcLengthUnit LengthUnit { get; set; } = IfcLengthUnit.Millimetre;
     public IfcPlaneAngleUnit AngleUnit { get; set; } = IfcPlaneAngleUnit.Degree;
 
@@ -662,6 +668,7 @@ public sealed partial class IfcModel
     public void Save(string path)
     {
         ArgumentNullException.ThrowIfNull(path);
+        EnsureWritableSchema();
         if (path.EndsWith(".ifczip", StringComparison.OrdinalIgnoreCase))
         {
             SaveZip(path);
@@ -677,6 +684,7 @@ public sealed partial class IfcModel
     public void SaveZip(string path)
     {
         ArgumentNullException.ThrowIfNull(path);
+        EnsureWritableSchema();
         string innerName = Path.GetFileNameWithoutExtension(path) + ".ifc";
 
         using var fs = File.Create(path);
@@ -691,6 +699,7 @@ public sealed partial class IfcModel
     public void Save(Stream stream, string fileName = "model.ifc")
     {
         ArgumentNullException.ThrowIfNull(stream);
+        EnsureWritableSchema();
         using var writer = new StreamWriter(stream, Encoding.UTF8, bufferSize: 65536, leaveOpen: true);
         Save(writer, fileName);
     }
@@ -707,6 +716,7 @@ public sealed partial class IfcModel
     public void Save(TextWriter writer, string fileName = "model.ifc")
     {
         ArgumentNullException.ThrowIfNull(writer);
+        EnsureWritableSchema();
 
         var w = new StepWriter();
         string schemaStr = Schema == IfcSchema.Ifc4 ? "IFC4" : "IFC2X3";
@@ -1410,6 +1420,14 @@ public sealed partial class IfcModel
         w.WriteTo(writer, fileName, schemaStr, viewDef, Application, Organization);
     }
 
+    internal void EnsureWritableSchema()
+    {
+        if (IsIfc4x3Subset)
+            throw new NotSupportedException("IFC4X3 is supported for subset import only. Rewriting it as IFC is not supported.");
+        if (Schema is not (IfcSchema.Ifc2x3 or IfcSchema.Ifc4))
+            throw new NotSupportedException($"Writing IFC schema '{Schema}' is not supported.");
+    }
+
     private void WritePropertyAndQuantitySets(StepWriter w, IfcElement element, int entityId, int ownerHistoryId)
     {
         // Property sets
@@ -1569,14 +1587,13 @@ public sealed partial class IfcModel
         ArgumentNullException.ThrowIfNull(reader);
 
         var step = StepReader.Read(reader);
-        var schema = (step.Schema?.Contains("IFC4", StringComparison.OrdinalIgnoreCase) == true)
-            ? IfcSchema.Ifc4
-            : IfcSchema.Ifc2x3;
+        var schema = ReadSchema(step);
 
         var model = new IfcModel
         {
             ProjectName = modelName ?? step.FileName ?? "Imported IFC Project",
             Schema = schema,
+            SourceSchemaIdentifier = step.Schema,
         };
         model.Storeys.Clear(); // Clear default storey
 
@@ -1802,6 +1819,7 @@ public sealed partial class IfcModel
             geomToMaterialMap,
             IfcTransform.Scale(geometryScale).Multiply(ParseWorldCoordinateSystem(step)),
             radiansPerAngleUnit,
+            omitUnsupportedPlacements: schema == IfcSchema.Ifc4x3,
             keepParametric: geometryScale == 1.0);
         var defaultStorey = model.Storeys[0];
         var allElementsMap = new Dictionary<int, IfcElement>();
@@ -1889,9 +1907,8 @@ public sealed partial class IfcModel
 
             // Parse Mesh / Solid Geometry
             int? shapeDefId = entity.GetRef(6);
-            if (shapeDefId.HasValue)
+            if (shapeDefId.HasValue && ResolveObjectPlacement(geometry, entity.GetRef(5)) is { } placement)
             {
-                var placement = ResolveObjectPlacement(geometry, entity.GetRef(5));
                 var mesh = ParseGeometry(geometry, shapeDefId.Value, name, placement, out var mat, out var solid, out var revSolid, out var boolResult);
                 if (mesh is not null)
                 {
@@ -1913,6 +1930,10 @@ public sealed partial class IfcModel
                 {
                     element.Material = mat;
                 }
+            }
+            else if (shapeDefId.HasValue)
+            {
+                model.UnsupportedPlacementCount++;
             }
 
             allElementsMap[entity.Id] = element;
@@ -2479,7 +2500,11 @@ public sealed partial class IfcModel
             string portName = portEnt.GetString(2) ?? "Port";
             string? desc = portEnt.GetString(3);
             string? sysType = portEnt.GetString(4);
-            var portPlacement = ResolveObjectPlacement(geometry, portEnt.GetRef(5));
+            if (ResolveObjectPlacement(geometry, portEnt.GetRef(5)) is not { } portPlacement)
+            {
+                model.UnsupportedPlacementCount++;
+                continue;
+            }
             var pos = portPlacement.Origin;
             var dir = portPlacement.Z.Normalized();
             if (dir == IfcVector3.Zero) dir = IfcVector3.UnitZ;
@@ -2533,6 +2558,36 @@ public sealed partial class IfcModel
 
         model._reservedElementIds.UnionWith(allElementsMap.Keys);
         return model;
+    }
+
+    private static IfcSchema ReadSchema(StepFile step)
+    {
+        if (step.SchemaIdentifiers.Count > 1)
+            throw new NotSupportedException($"Multiple IFC schema identifiers are not supported: {string.Join(", ", step.SchemaIdentifiers)}.");
+        if (string.IsNullOrWhiteSpace(step.Schema))
+            throw new InvalidDataException("The STEP file does not declare an IFC schema in FILE_SCHEMA.");
+        string? name = SchemaName(step.Schema);
+        if (string.Equals(name, "IFC2X3", StringComparison.OrdinalIgnoreCase)) return IfcSchema.Ifc2x3;
+        if (string.Equals(name, "IFC4", StringComparison.OrdinalIgnoreCase)) return IfcSchema.Ifc4;
+        if (IsIfc4x3Identifier(step.Schema)) return IfcSchema.Ifc4x3;
+        throw new NotSupportedException($"IFC schema '{step.Schema}' is not supported.");
+    }
+
+    private static bool IsIfc4x3Identifier(string? identifier) =>
+        identifier is not null && SchemaName(identifier)?.ToUpperInvariant() is "IFC4X3" or "IFC4X3_ADD1" or "IFC4X3_ADD2";
+
+    private static string? SchemaName(string identifier)
+    {
+        // Part 21 allows a numeric object identifier after the exact EXPRESS schema name.
+        int brace = identifier.IndexOf('{');
+        if (brace < 0) return identifier;
+        if (brace == 0 || !identifier.EndsWith('}')) return null;
+        string[] arcs = identifier[(brace + 1)..^1].Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (arcs.Length < 2 || arcs[0] is not ("0" or "1" or "2") || arcs.Any(arc => !arc.All(char.IsAsciiDigit)))
+            return null;
+        if (arcs[0] != "2" && (!int.TryParse(arcs[1], NumberStyles.None, CultureInfo.InvariantCulture, out int second) || second > 39))
+            return null;
+        return identifier[..brace].TrimEnd(' ');
     }
 
     private int WriteElementShape(StepWriter w, IfcElement element, int bodySubContextId, Dictionary<string, int> styleCache, bool useTessellation)
@@ -2753,7 +2808,8 @@ public sealed partial class IfcModel
 
     /// <summary>State shared while reading product geometry: caches for placements and mapped representations.</summary>
     private sealed class GeometryReadContext(
-        StepFile step, Dictionary<int, IfcMaterial> geomToMaterialMap, IfcTransform root, double radiansPerAngleUnit, bool keepParametric)
+        StepFile step, Dictionary<int, IfcMaterial> geomToMaterialMap, IfcTransform root, double radiansPerAngleUnit,
+        bool omitUnsupportedPlacements, bool keepParametric)
     {
         public StepFile Step { get; } = step;
         public Dictionary<int, IfcMaterial> GeomToMaterialMap { get; } = geomToMaterialMap;
@@ -2761,6 +2817,7 @@ public sealed partial class IfcModel
         /// <summary>Unit scale applied after the world coordinate system of the model context.</summary>
         public IfcTransform Root { get; } = root;
         public double RadiansPerAngleUnit { get; } = radiansPerAngleUnit;
+        public bool OmitUnsupportedPlacements { get; } = omitUnsupportedPlacements;
 
         /// <summary>False when geometry is rescaled to metres: parametric solids stay in file units and would disagree with LengthUnit.</summary>
         public bool KeepParametric { get; } = keepParametric;
@@ -3027,7 +3084,7 @@ public sealed partial class IfcModel
     }
 
     /// <summary>Resolves an IfcObjectPlacement (PlacementRelTo chain) into a world transform in model length units.</summary>
-    private static IfcTransform ResolveObjectPlacement(GeometryReadContext ctx, int? placementId)
+    private static IfcTransform? ResolveObjectPlacement(GeometryReadContext ctx, int? placementId)
     {
         // Walk up to a resolved or root placement, then compose downwards (iterative: chains may be deep).
         var chain = new List<StepEntity>();
@@ -3042,8 +3099,12 @@ public sealed partial class IfcModel
             }
 
             var ent = ctx.Step.Find(id.Value);
-            // shortcut: IfcGridPlacement (and any non-local placement) resolves to the world origin; add grid intersection support when a model needs it.
-            if (ent is null || !ent.Type.Equals("IFCLOCALPLACEMENT", StringComparison.OrdinalIgnoreCase)) break;
+            if (ent is null || !ent.Type.Equals("IFCLOCALPLACEMENT", StringComparison.OrdinalIgnoreCase))
+            {
+                // A linear or grid placement cannot be reduced to a local origin.
+                if (ctx.OmitUnsupportedPlacements) return null;
+                break;
+            }
             if (!visited.Add(id.Value))
             {
                 throw new InvalidDataException($"IFC placement #{id.Value} is relative to itself (PlacementRelTo cycle).");

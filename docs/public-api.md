@@ -15,6 +15,12 @@ This page summarizes the public types and entry points of the `IfcIO` package.
 | `IfcBuildingStorey`, `IfcSpace` | Storeys hold elements and spaces and carry elevations. The model does not expose separate `IfcSite`, `IfcBuilding`, or `IfcProject` objects. |
 | `IfcGuid` | buildingSMART 22-character compressed GlobalId encoder/decoder with bidirectional conversion to 128-bit .NET `Guid`. |
 
+`IfcModel.SourceSchemaIdentifier` preserves the file's `FILE_SCHEMA` identifier, including any appended numeric
+object identifier. `IfcSchema.Ifc4x3` means subset import only: not every IFC4.3 entity is interpreted.
+Representations and ports with unsupported placements are omitted and counted in `UnsupportedPlacementCount`.
+IFC output and schema migration are not supported for these models, including after extraction.
+Unknown, missing or multiple schema identifiers fail model import.
+
 `IfcModel.LengthUnit` controls the declared unit of geometry and storey elevations. IFC import keeps recognised
 millimetres, metres, feet and inches in the model; other supported length scales are converted to metres.
 `IfcModel.AngleUnit` controls the IFC plane angle unit, but `IfcRevolvedAreaSolid.Angle` is always in radians in memory.

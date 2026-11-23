@@ -10,6 +10,9 @@ public enum IfcSchema
 
     /// <summary>IFC4 Reference View / Design Transfer View.</summary>
     Ifc4,
+
+    /// <summary>IFC4.3. Import supports a subset of the schema; IFC export is not supported.</summary>
+    Ifc4x3,
 }
 
 /// <summary>

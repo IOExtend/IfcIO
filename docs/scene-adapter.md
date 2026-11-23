@@ -88,8 +88,8 @@ rebases them, for example on `ComputeBounds().Center`, before narrowing them to 
 - IfcIO places an element in a storey only through `IfcRelContainedInSpatialStructure`. Elements contained in the site
   or building, and spaces aggregated to a storey (`IfcRelAggregates`), are in the first storey. A file without storeys
   gets IfcIO's default storey `Level 1`, which has no GlobalId. Site, building and project are not tree nodes.
-- IfcIO lists type objects (`IfcWallType`, `IfcDoorStyle`) and door and window lining and panel properties among the
-  elements; the adapter skips them. Type property sets are not read yet; when they are, they will use the same
+- IfcIO excludes type objects (`IfcWallType`, `IfcDoorStyle`) and door and window lining and panel properties from
+  the occurrence list. Type property sets are not read yet; when they are, they will use the same
   `ifc:` keys and come after the occurrence sets in `PropertySetIds`, so a lookup by key finds the occurrence value
   first.
 - Property values are text even when the IFC value is a number or a boolean: IfcIO keeps only the text.

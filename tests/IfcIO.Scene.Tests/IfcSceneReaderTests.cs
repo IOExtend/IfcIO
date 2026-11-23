@@ -204,8 +204,7 @@ public class IfcSceneReaderTests
             """;
         var model = OpenText(PlacedIfc(Millimetre, NonProducts));
         long[] nonProducts = [500, 501, 502];
-        // IfcIO lists them as elements, which is what the adapter has to undo.
-        Assert.All(nonProducts, id => Assert.Contains(model.AllElements, e => e.Id == id));
+        Assert.All(nonProducts, id => Assert.DoesNotContain(model.AllElements, e => e.Id == id));
 
         var result = Valid(Read(model));
 

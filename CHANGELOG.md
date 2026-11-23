@@ -5,6 +5,7 @@ All notable changes to the `IfcIO` library are documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- IFC import no longer treats type definitions, styles, or lining properties as building element occurrences.
 - IFC2x3 and IFC4 exports write the profile attributes expected by each schema for I, L and U sections. IFC2x3
   parameterized profiles also get the required local placement, including at the origin.
 - `ifcio validate` returns a non-zero exit code if model validation cannot complete or a requested BCF report cannot

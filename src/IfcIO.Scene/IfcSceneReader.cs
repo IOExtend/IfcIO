@@ -21,8 +21,8 @@ namespace IfcIO.Scene;
 /// <para>
 /// Each storey becomes a level (elevation in metres) and a tree node of kind <see cref="SceneNodeKind.Level"/>.
 /// Each element of the storey (and each space with <see cref="IfcSceneOptions.IncludeSpaces"/>) becomes a child of
-/// that node, except the type objects (for example <c>IFCWALLTYPE</c>, <c>IFCDOORSTYLE</c>) and lining and panel
-/// properties that IfcIO also lists as elements. <see cref="SceneElement.Id"/> is <see cref="IfcElement.Id"/>, which
+/// that node. Type objects, styles and lining and panel properties are not occurrences. <see cref="SceneElement.Id"/>
+/// is <see cref="IfcElement.Id"/>, which
 /// for a model opened from a file is the STEP entity id (<c>#123</c> gives 123); <see cref="SceneElement.SourceId"/>
 /// and <see cref="SceneElement.IfcGuid"/> are the GlobalId; <see cref="SceneElement.Category"/> is the IFC class as
 /// IfcIO reports it (upper case, for example <c>IFCWALL</c>). IfcIO places an element in a storey only through
@@ -158,9 +158,8 @@ public static class IfcSceneReader
             ?? typeof(IfcSceneReader).Assembly.GetName().Version?.ToString()
             ?? "0.0.0").Split('+')[0];
 
-    // shortcut: IfcIO picks products by class-name prefix (IFCWALL, IFCDOOR, ...), so type objects such as IfcWallType or
-    // IfcDoorStyle and the door and window lining and panel properties arrive as elements without geometry; no product
-    // class it matches ends like these. Remove once IfcIO reads only IfcProduct subtypes.
+    // IfcModel.Open excludes type objects and other non-products. Keep the defensive filter for
+    // caller-constructed models, whose element classes can be assigned directly.
     private static bool IsNotProduct(string ifcType) =>
         ifcType.EndsWith("TYPE", StringComparison.OrdinalIgnoreCase)
         || ifcType.EndsWith("STYLE", StringComparison.OrdinalIgnoreCase)

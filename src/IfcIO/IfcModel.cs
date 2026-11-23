@@ -3492,42 +3492,25 @@ public sealed partial class IfcModel
         return StepWriter.Unescape(rawVal) ?? rawVal;
     }
 
-    private static bool IsBimProductType(string type)
+    // Supported IFC2x3 and IFC4 occurrence classes. Explicit names keep type objects,
+    // styles, and property definitions out without excluding legitimate occurrence variants.
+    private static readonly HashSet<string> BimProductTypes = new(StringComparer.OrdinalIgnoreCase)
     {
-        return type.StartsWith("IFCWALL", StringComparison.OrdinalIgnoreCase)
-            || type.StartsWith("IFCSLAB", StringComparison.OrdinalIgnoreCase)
-            || type.StartsWith("IFCCOLUMN", StringComparison.OrdinalIgnoreCase)
-            || type.StartsWith("IFCBEAM", StringComparison.OrdinalIgnoreCase)
-            || type.StartsWith("IFCWINDOW", StringComparison.OrdinalIgnoreCase)
-            || type.StartsWith("IFCDOOR", StringComparison.OrdinalIgnoreCase)
-            || type.StartsWith("IFCFOOTING", StringComparison.OrdinalIgnoreCase)
-            || type.StartsWith("IFCREINFORCINGBAR", StringComparison.OrdinalIgnoreCase)
-            || type.StartsWith("IFCSTAIR", StringComparison.OrdinalIgnoreCase)
-            || type.StartsWith("IFCRAILING", StringComparison.OrdinalIgnoreCase)
-            || type.StartsWith("IFCROOF", StringComparison.OrdinalIgnoreCase)
-            || type.StartsWith("IFCPIPESEGMENT", StringComparison.OrdinalIgnoreCase)
-            || type.StartsWith("IFCDUCTSEGMENT", StringComparison.OrdinalIgnoreCase)
-            || type.StartsWith("IFCMEMBER", StringComparison.OrdinalIgnoreCase)
-            || type.StartsWith("IFCPLATE", StringComparison.OrdinalIgnoreCase)
-            || type.StartsWith("IFCCOVERING", StringComparison.OrdinalIgnoreCase)
-            || type.StartsWith("IFCFURNISHINGELEMENT", StringComparison.OrdinalIgnoreCase)
-            || type.StartsWith("IFCOPENINGELEMENT", StringComparison.OrdinalIgnoreCase)
-            || type.Equals("IFCSPACE", StringComparison.OrdinalIgnoreCase)
-            || type.Equals("IFCBUILDINGELEMENTPROXY", StringComparison.OrdinalIgnoreCase)
-            // MEP distribution elements: IFC2x3 generic flow classes and IFC4 fittings
-            || type.Equals("IFCFLOWSEGMENT", StringComparison.OrdinalIgnoreCase)
-            || type.Equals("IFCFLOWFITTING", StringComparison.OrdinalIgnoreCase)
-            || type.Equals("IFCFLOWTERMINAL", StringComparison.OrdinalIgnoreCase)
-            || type.Equals("IFCFLOWCONTROLLER", StringComparison.OrdinalIgnoreCase)
-            || type.Equals("IFCFLOWMOVINGDEVICE", StringComparison.OrdinalIgnoreCase)
-            || type.Equals("IFCFLOWSTORAGEDEVICE", StringComparison.OrdinalIgnoreCase)
-            || type.Equals("IFCFLOWTREATMENTDEVICE", StringComparison.OrdinalIgnoreCase)
-            || type.Equals("IFCENERGYCONVERSIONDEVICE", StringComparison.OrdinalIgnoreCase)
-            || type.Equals("IFCDISTRIBUTIONCHAMBERELEMENT", StringComparison.OrdinalIgnoreCase)
-            || type.Equals("IFCDISTRIBUTIONCONTROLELEMENT", StringComparison.OrdinalIgnoreCase)
-            || type.Equals("IFCPIPEFITTING", StringComparison.OrdinalIgnoreCase)
-            || type.Equals("IFCDUCTFITTING", StringComparison.OrdinalIgnoreCase);
-    }
+        "IFCWALL", "IFCWALLSTANDARDCASE", "IFCWALLELEMENTEDCASE",
+        "IFCSLAB", "IFCSLABSTANDARDCASE", "IFCSLABELEMENTEDCASE",
+        "IFCCOLUMN", "IFCCOLUMNSTANDARDCASE", "IFCBEAM", "IFCBEAMSTANDARDCASE",
+        "IFCWINDOW", "IFCWINDOWSTANDARDCASE", "IFCDOOR", "IFCDOORSTANDARDCASE",
+        "IFCFOOTING", "IFCREINFORCINGBAR", "IFCSTAIR", "IFCSTAIRFLIGHT", "IFCRAILING", "IFCROOF",
+        "IFCMEMBER", "IFCMEMBERSTANDARDCASE", "IFCPLATE", "IFCPLATESTANDARDCASE",
+        "IFCCOVERING", "IFCFURNISHINGELEMENT", "IFCOPENINGELEMENT", "IFCSPACE", "IFCBUILDINGELEMENTPROXY",
+        // Generic IFC2x3 flow classes and the supported typed IFC4 distribution occurrences.
+        "IFCFLOWSEGMENT", "IFCFLOWFITTING", "IFCFLOWTERMINAL", "IFCFLOWCONTROLLER",
+        "IFCFLOWMOVINGDEVICE", "IFCFLOWSTORAGEDEVICE", "IFCFLOWTREATMENTDEVICE", "IFCENERGYCONVERSIONDEVICE",
+        "IFCDISTRIBUTIONCHAMBERELEMENT", "IFCDISTRIBUTIONCONTROLELEMENT",
+        "IFCPIPESEGMENT", "IFCDUCTSEGMENT", "IFCPIPEFITTING", "IFCDUCTFITTING",
+    };
+
+    private static bool IsBimProductType(string type) => BimProductTypes.Contains(type);
 
     private static int WriteMeshTriangulatedFaceSet(StepWriter w, IReadOnlyList<IfcVector3> vertices, IReadOnlyList<int> indices)
     {

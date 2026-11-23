@@ -191,6 +191,39 @@ public class IfcModelTests
     }
 
     [Fact]
+    public void IfcModel_Open_ImportsOnlySupportedProductOccurrences()
+    {
+        const string input = """
+            ISO-10303-21;
+            HEADER; FILE_SCHEMA(('IFC4')); ENDSEC;
+            DATA;
+            #1=IFCWALL('01vctVUKr0kugbFTf53O9L',$,'Wall',$,$,$,$,$,.STANDARD.);
+            #2=ifcwallstandardcase('02vctVUKr0kugbFTf53O9L',$,'Standard wall',$,$,$,$,$,.STANDARD.);
+            #3=IFCSTAIRFLIGHT('03vctVUKr0kugbFTf53O9L',$,'Flight',$,$,$,$,$,$,$,$,$,.STRAIGHT.);
+            #4=IFCDOORSTANDARDCASE('04vctVUKr0kugbFTf53O9L',$,'Door',$,$,$,$,$,$,$,.DOOR.,.SINGLE_SWING_LEFT.,$);
+            #5=IFCPIPESEGMENT('05vctVUKr0kugbFTf53O9L',$,'MEP segment',$,$,$,$,$,.RIGIDSEGMENT.);
+            #20=IFCWALLTYPE('20vctVUKr0kugbFTf53O9L',$,'Wall type',$,$,$,$,$,$,.STANDARD.);
+            #21=IFCDOORSTYLE('21vctVUKr0kugbFTf53O9L',$,'Door style',$,$,$,$,$,.SINGLE_SWING_LEFT.,.WOOD.,.F.,.F.);
+            #22=IFCWINDOWLININGPROPERTIES('22vctVUKr0kugbFTf53O9L',$,'Window lining',$,$,$,$,$,$,$,$,$,$,$,$,$);
+            #23=IFCSLABTYPE('23vctVUKr0kugbFTf53O9L',$,'Slab type',$,$,$,$,$,$,.FLOOR.);
+            #24=IFCBEAMTYPE('24vctVUKr0kugbFTf53O9L',$,'Beam type',$,$,$,$,$,$,.BEAM.);
+            #25=IFCWALLNOTSUPPORTED('25vctVUKr0kugbFTf53O9L',$,'Not supported',$,$,$,$,$);
+            ENDSEC;
+            END-ISO-10303-21;
+            """;
+
+        using var reader = new StringReader(input);
+        var model = IfcModel.Open(reader);
+
+        Assert.Collection(model.AllElements.OrderBy(e => e.Id),
+            element => Assert.Equal(1, element.Id),
+            element => Assert.Equal(2, element.Id),
+            element => Assert.Equal(3, element.Id),
+            element => Assert.Equal(4, element.Id),
+            element => Assert.Equal(5, element.Id));
+    }
+
+    [Fact]
     public void IfcModel_SaveZip_CreatesValidIfcZipArchive()
     {
         var model = IfcModel.Create("Zipped Building", IfcSchema.Ifc2x3);

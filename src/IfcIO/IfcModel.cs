@@ -847,8 +847,8 @@ public sealed partial class IfcModel
                         int openShapeId = WriteElementShape(w, opening, bodySubContextId, styleCache, useTessellation);
 
                         string openGuid = ProductGuid(opening, "IfcIO-Opening");
-                        int openElemId = w.Add("IFCOPENINGELEMENT",
-                            $"{StepWriter.Str(openGuid)},{StepWriter.Ref(ownerHistoryId)},{StepWriter.Str(opening.Name)},$,$,{StepWriter.Ref(openPlacementId)},{StepWriter.Ref(openShapeId)},{StepWriter.Str(opening.Tag ?? opening.Id.ToString(CultureInfo.InvariantCulture))},.OPENING.");
+                        int openElemId = AddIfcProduct(w, "IFCOPENINGELEMENT", openGuid, ownerHistoryId, opening.Name,
+                            openPlacementId, openShapeId, opening.Tag ?? opening.Id.ToString(CultureInfo.InvariantCulture));
 
                         w.Add("IFCRELVOIDSELEMENT",
                             $"{StepWriter.Str(IfcGuid.NewGuid())},{StepWriter.Ref(ownerHistoryId)},$,$,{StepWriter.Ref(elemId)},{StepWriter.Ref(openElemId)}");
@@ -1660,6 +1660,7 @@ public sealed partial class IfcModel
                 }
             }
         }
+        InheritAggregateStoreys(step, storeyMap, elementToStoreyMap);
 
         // 5. Parse Property Sets and Quantity Sets
         var psetMap = new Dictionary<int, IfcPropertySet>();
@@ -1775,19 +1776,23 @@ public sealed partial class IfcModel
             keepParametric: geometryScale == 1.0);
         var defaultStorey = model.Storeys[0];
         var allElementsMap = new Dictionary<int, IfcElement>();
+        var productTypes = GetProductImportTypes(step, schema);
+        var voidHosts = FindVoidHosts(step, productTypes);
 
         foreach (var entity in step.EntityValues)
         {
-            if (!IsBimProductType(entity.Type)) continue;
+            if (!productTypes.TryGetValue(entity.Type, out var occurrence)) continue;
+            int? shapeDefId = entity.GetRef(6);
+            if (occurrence.NeedsBody && !voidHosts.Contains(entity.Id) && !HasBodyRepresentation(step, shapeDefId)) continue;
 
             string globalId = entity.GetString(0) ?? IfcGuid.NewGuid();
             string name = entity.GetString(2) ?? entity.Type;
-            string? tag = entity.GetString(7);
+            string? tag = occurrence.TagIndex >= 0 ? entity.GetString(occurrence.TagIndex) : null;
 
             var targetStorey = elementToStoreyMap.TryGetValue(entity.Id, out var s) ? s : defaultStorey;
 
-            bool isOpening = entity.Type.Equals("IFCOPENINGELEMENT", StringComparison.OrdinalIgnoreCase);
             bool isSpace = entity.Type.Equals("IFCSPACE", StringComparison.OrdinalIgnoreCase);
+            bool isOpening = occurrence.IsOpening;
 
             IfcElement element;
             if (isOpening)
@@ -1858,11 +1863,10 @@ public sealed partial class IfcModel
             }
 
             // Parse Mesh / Solid Geometry
-            int? shapeDefId = entity.GetRef(6);
             if (shapeDefId.HasValue && ResolveObjectPlacement(geometry, entity.GetRef(5)) is { } placement)
             {
                 var mesh = ParseGeometry(geometry, shapeDefId.Value, name, placement, out var mat, out var solid, out var revSolid,
-                    out var boolResult, out bool unwritableBooleanBody);
+                    out var boolResult, out bool unwritableBooleanBody, bodyOnly: occurrence.NeedsBody);
                 element.HasUnwritableBooleanBody = unwritableBooleanBody;
                 if (mesh is not null)
                 {
@@ -2612,7 +2616,7 @@ public sealed partial class IfcModel
                 $"$,$,({StepWriter.Ref(shapeRepId)})");
         }
 
-        return StepWriter.Null == "$" ? w.Add("IFCPRODUCTDEFINITIONSHAPE", "$,$,()") : 0;
+        return 0;
     }
 
     private int WriteProfileDef(StepWriter w, IfcProfileDef profile)
@@ -2848,7 +2852,8 @@ public sealed partial class IfcModel
         out IfcExtrudedAreaSolid? solid,
         out IfcRevolvedAreaSolid? revolvedSolid,
         out IfcBooleanResult? booleanResult,
-        out bool unwritableBooleanBody)
+        out bool unwritableBooleanBody,
+        bool bodyOnly)
     {
         material = null;
         solid = null;
@@ -2864,9 +2869,10 @@ public sealed partial class IfcModel
             .Where(r => r.Type.Equals("IFCSHAPEREPRESENTATION", StringComparison.OrdinalIgnoreCase))
             .ToList();
 
-        // 'Body' first; other representations (Axis, Box, FootPrint...) only when no body geometry is readable.
+        // Legacy products can fall back to another representation; newly discovered products require Body.
         static bool IsBody(StepEntity rep) => string.Equals(rep.GetString(1), "Body", StringComparison.OrdinalIgnoreCase);
-        foreach (var rep in reps.Where(IsBody).Concat(reps.Where(r => !IsBody(r))))
+        var bodies = reps.Where(IsBody);
+        foreach (var rep in bodyOnly ? bodies : bodies.Concat(reps.Where(r => !IsBody(r))))
         {
             IfcMaterial? repMaterial = null;
             var mesh = ParseRepresentationItems(ctx, rep, meshName, ref repMaterial, out var parametric, out bool hasBoolean);
@@ -3677,9 +3683,8 @@ public sealed partial class IfcModel
         return StepWriter.Unescape(rawVal) ?? rawVal;
     }
 
-    // Supported IFC2x3 and IFC4 occurrence classes. Explicit names keep type objects,
-    // styles, and property definitions out without excluding legitimate occurrence variants.
-    private static readonly HashSet<string> BimProductTypes = new(StringComparer.OrdinalIgnoreCase)
+    // Preserve metadata-only imports for the original set of supported occurrences.
+    private static readonly HashSet<string> ProductsImportedWithoutBody = new(StringComparer.OrdinalIgnoreCase)
     {
         "IFCWALL", "IFCWALLSTANDARDCASE", "IFCWALLELEMENTEDCASE",
         "IFCSLAB", "IFCSLABSTANDARDCASE", "IFCSLABELEMENTEDCASE",
@@ -3695,7 +3700,77 @@ public sealed partial class IfcModel
         "IFCPIPESEGMENT", "IFCDUCTSEGMENT", "IFCPIPEFITTING", "IFCDUCTFITTING",
     };
 
-    private static bool IsBimProductType(string type) => BimProductTypes.Contains(type);
+    private readonly record struct ProductImportInfo(int TagIndex, bool IsOpening, bool NeedsBody);
+
+    private static void InheritAggregateStoreys(
+        StepFile step, Dictionary<int, IfcBuildingStorey> storeys, Dictionary<int, IfcBuildingStorey> assignments)
+    {
+        var children = new Dictionary<int, List<int>>();
+        foreach (var rel in step.IndexedOfType("IFCRELAGGREGATES"))
+        {
+            if (rel.GetRef(4) is not int parent) continue;
+            if (!children.TryGetValue(parent, out var group)) children[parent] = group = [];
+            group.AddRange(rel.GetRefList(5));
+        }
+        if (children.Count == 0) return;
+
+        var pending = new Queue<int>();
+        foreach (int id in assignments.Keys)
+            if (children.ContainsKey(id)) pending.Enqueue(id);
+        foreach (var (id, storey) in storeys)
+            if (children.ContainsKey(id) && assignments.TryAdd(id, storey)) pending.Enqueue(id);
+
+        while (pending.TryDequeue(out int parent))
+        {
+            var storey = assignments[parent];
+            foreach (int child in children[parent])
+                if (assignments.TryAdd(child, storey) && children.ContainsKey(child)) pending.Enqueue(child);
+        }
+    }
+
+    private static HashSet<int> FindVoidHosts(StepFile step, Dictionary<string, ProductImportInfo> productTypes)
+    {
+        var hosts = new HashSet<int>();
+        foreach (var relation in step.IndexedOfType("IFCRELVOIDSELEMENT"))
+        {
+            if (step.Find(relation.GetRef(4)) is { } host
+                && productTypes.TryGetValue(host.Type, out var hostType) && hostType.TagIndex == 7
+                && step.Find(relation.GetRef(5)) is { } opening
+                && productTypes.TryGetValue(opening.Type, out var occurrence) && occurrence.IsOpening
+                && (!occurrence.NeedsBody || HasBodyRepresentation(step, opening.GetRef(6))))
+                hosts.Add(host.Id);
+        }
+        return hosts;
+    }
+
+    private static Dictionary<string, ProductImportInfo> GetProductImportTypes(StepFile step, IfcSchema schema)
+    {
+        var productTypes = new Dictionary<string, ProductImportInfo>(StringComparer.OrdinalIgnoreCase);
+        // Classify each STEP type once, then visit the entities in their original order.
+        foreach (string type in step.IndexedTypeNames)
+        {
+            if (ProductsImportedWithoutBody.Contains(type))
+                productTypes.Add(type, new(7, type.Equals("IFCOPENINGELEMENT", StringComparison.OrdinalIgnoreCase), NeedsBody: false));
+            else if (IfcProductOccurrences.TryGetInfo(schema, type, out int tagIndex, out bool subtracts))
+                productTypes.Add(type, new(tagIndex, subtracts, NeedsBody: true));
+        }
+        return productTypes;
+    }
+
+    private static bool HasBodyRepresentation(StepFile step, int? shapeId)
+    {
+        if (step.Find(shapeId) is not { } shape
+            || !shape.Type.Equals("IFCPRODUCTDEFINITIONSHAPE", StringComparison.OrdinalIgnoreCase)) return false;
+
+        foreach (int repId in shape.GetRefList(2))
+        {
+            if (step.Find(repId) is { } rep
+                && rep.Type.Equals("IFCSHAPEREPRESENTATION", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(rep.GetString(1), "Body", StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
+    }
 
     private static int WriteMeshTriangulatedFaceSet(StepWriter w, IReadOnlyList<IfcVector3> vertices, int[] indices, bool closed)
     {
@@ -3778,7 +3853,7 @@ public sealed partial class IfcModel
         return styleId;
     }
 
-    private static int AddIfcProduct(
+    private int AddIfcProduct(
         StepWriter w,
         string ifcType,
         string guid,
@@ -3788,7 +3863,8 @@ public sealed partial class IfcModel
         int shapeId,
         string tag)
     {
-        string commonArgs = $"{StepWriter.Str(guid)},{StepWriter.Ref(ownerHistoryId)},{StepWriter.Str(name)},$,$,{StepWriter.Ref(placementId)},{StepWriter.Ref(shapeId)},{StepWriter.Str(tag)}";
+        string shapeRef = shapeId > 0 ? StepWriter.Ref(shapeId) : StepWriter.Null;
+        string commonArgs = $"{StepWriter.Str(guid)},{StepWriter.Ref(ownerHistoryId)},{StepWriter.Str(name)},$,$,{StepWriter.Ref(placementId)},{shapeRef},{StepWriter.Str(tag)}";
 
         return ifcType switch
         {
@@ -3805,8 +3881,10 @@ public sealed partial class IfcModel
             "IFCROOF" => w.Add("IFCROOF", $"{commonArgs},.FLAT_ROOF."),
             "IFCPIPESEGMENT" => w.Add("IFCPIPESEGMENT", commonArgs),
             "IFCDUCTSEGMENT" => w.Add("IFCDUCTSEGMENT", commonArgs),
-            "IFCOPENINGELEMENT" => w.Add("IFCOPENINGELEMENT", $"{commonArgs},.OPENING."),
-            _ => w.Add("IFCBUILDINGELEMENTPROXY", $"{commonArgs},.ELEMENT."),
+            "IFCOPENINGELEMENT" => w.Add("IFCOPENINGELEMENT", Schema == IfcSchema.Ifc4 ? $"{commonArgs},.OPENING." : commonArgs),
+            _ => w.Add("IFCBUILDINGELEMENTPROXY", Schema == IfcSchema.Ifc4
+                ? $"{commonArgs},.NOTDEFINED."
+                : $"{commonArgs},.ELEMENT."),
         };
     }
 

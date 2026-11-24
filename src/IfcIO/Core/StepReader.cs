@@ -217,6 +217,7 @@ public sealed class StepFile
     // Only used by the model importer, which neither exposes nor edits the parsed dictionary.
     internal IEnumerable<StepEntity> IndexedOfType(string entityType) =>
         _typeIndex is not null && _typeIndex.TryGetValue(entityType, out var bucket) ? bucket : [];
+    internal IEnumerable<string> IndexedTypeNames => _typeIndex is { } index ? index.Keys : [];
 
     /// <summary>Finds an entity by its #ID, or null if not found.</summary>
     public StepEntity? Find(int? id) => id.HasValue && _entities.TryGetValue(id.Value, out var e) ? e : null;

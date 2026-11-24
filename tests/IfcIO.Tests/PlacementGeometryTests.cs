@@ -344,12 +344,12 @@ public class PlacementGeometryTests
     }
 
     [Fact]
-    public void Save_NestedUnsupportedBoolean_RejectsMissingOperandInsteadOfWritingRefZero()
+    public void Save_NestedBooleanWithMissingOperand_DoesNotWriteRefZero()
     {
         string ifc = BuildIfc(Millimetre)
             .Replace("'Clipping',(#606));", "'Clipping',(#614));", StringComparison.Ordinal)
             .Replace("#606=IFCBOOLEANCLIPPINGRESULT(.DIFFERENCE.,#607,#610);",
-                "#606=IFCBOOLEANCLIPPINGRESULT(.DIFFERENCE.,#607,#610); #614=IFCBOOLEANCLIPPINGRESULT(.DIFFERENCE.,#606,#610);",
+                "#606=IFCBOOLEANCLIPPINGRESULT(.DIFFERENCE.,#999,#610); #614=IFCBOOLEANCLIPPINGRESULT(.DIFFERENCE.,#606,#610);",
                 StringComparison.Ordinal);
 
         var error = Assert.Throws<InvalidDataException>(() => Open(ifc).ToStepString());

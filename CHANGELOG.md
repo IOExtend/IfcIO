@@ -5,6 +5,8 @@ All notable changes to the `IfcIO` library are documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- Boolean import preserves nested operands and evaluates chains of plane clips. It reports skipped bounded
+  half-spaces and Boolean operations not evaluated in the mesh, and rejects cyclic or excessive trees.
 - Swept-solid import applies the profile, solid and object placements to inclined extrusions, revolutions and
   both Boolean operands. IFC re-export preserves world placement and multiple swept body items when a single
   parametric solid cannot represent the result. Mesh export distinguishes open surfaces from closed shells.

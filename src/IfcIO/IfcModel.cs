@@ -24,6 +24,9 @@ public sealed partial class IfcModel
     internal bool IsIfc4x3Subset => Schema == IfcSchema.Ifc4x3 || IsIfc4x3Identifier(SourceSchemaIdentifier);
     /// <summary>Number of IFC4X3 product representations or ports omitted because their placement is unsupported.</summary>
     public int UnsupportedPlacementCount { get; internal set; }
+
+    /// <summary>Boolean import warnings for skipped operands or operations not evaluated in the mesh.</summary>
+    public IReadOnlyList<string> BooleanImportWarnings { get; internal set; } = [];
     public IfcLengthUnit LengthUnit { get; set; } = IfcLengthUnit.Millimetre;
     public IfcPlaneAngleUnit AngleUnit { get; set; } = IfcPlaneAngleUnit.Degree;
 
@@ -2506,6 +2509,7 @@ public sealed partial class IfcModel
         }
 
         model._reservedElementIds.UnionWith(allElementsMap.Keys);
+        model.BooleanImportWarnings = geometry.BooleanWarnings.Order(StringComparer.Ordinal).ToArray();
         return model;
     }
 
@@ -2685,6 +2689,8 @@ public sealed partial class IfcModel
             firstId = WriteRevolvedAreaSolid(w, revolution);
         else if ((csg.FirstMesh ?? csg.FirstRevolved?.ToMesh()) is { } firstMesh)
             firstId = WriteBooleanMesh(w, firstMesh, useTessellation);
+        else if (csg.FirstBoolean is { } firstBoolean)
+            firstId = WriteBooleanResult(w, firstBoolean, useTessellation);
 
         int secondId = 0;
         if (csg.SecondHalfSpace is not null)
@@ -2703,9 +2709,17 @@ public sealed partial class IfcModel
         {
             secondId = WriteExtrudedAreaSolid(w, csg.SecondSolid);
         }
-        else if (csg.SecondMesh is not null)
+        else if (csg.SecondRevolved is { } secondRevolved && CanWriteRevolution(secondRevolved))
         {
-            secondId = WriteBooleanMesh(w, csg.SecondMesh, useTessellation);
+            secondId = WriteRevolvedAreaSolid(w, secondRevolved);
+        }
+        else if ((csg.SecondMesh ?? csg.SecondRevolved?.ToMesh()) is { } secondMesh)
+        {
+            secondId = WriteBooleanMesh(w, secondMesh, useTessellation);
+        }
+        else if (csg.SecondBoolean is { } secondBoolean)
+        {
+            secondId = WriteBooleanResult(w, secondBoolean, useTessellation);
         }
 
         string op = csg.Operator switch
@@ -2745,8 +2759,10 @@ public sealed partial class IfcModel
     private static bool CanWriteRevolution(IfcRevolvedAreaSolid solid) =>
         solid.Axis.Location.Z == solid.Position.Z && solid.Axis.Axis.Z == 0 && solid.Axis.Axis != IfcVector3.Zero;
 
-    private static bool CanWriteClipping(IfcBooleanResult result) => result.IsClippingResult
-        && (result.FirstSolid is not null || result.FirstRevolved is { } revolution && CanWriteRevolution(revolution));
+    private static bool CanWriteClipping(IfcBooleanResult result) =>
+        result.Operator == IfcBooleanOperator.Difference && result.SecondHalfSpace is not null
+        && (result.FirstSolid is not null || result.FirstRevolved is { } revolution && CanWriteRevolution(revolution)
+            || result.FirstBoolean is { } firstBoolean && CanWriteClipping(firstBoolean));
 
     private int WriteRevolvedAreaSolid(StepWriter w, IfcRevolvedAreaSolid solid)
     {
@@ -2785,14 +2801,21 @@ public sealed partial class IfcModel
         public Dictionary<int, IfcTransform> Placements { get; } = [];
         public Dictionary<int, (IfcMesh? Mesh, IfcMaterial? Material)> MappedRepresentations { get; } = [];
         public HashSet<int> MapsInProgress { get; } = [];
+        public HashSet<string> BooleanWarnings { get; } = [];
 
         /// <summary>
-        /// Cap on vertices materialised while reading, linear in the file size: nested IfcMappedItems can
-        /// otherwise multiply a small file into exponentially many vertices.
+        /// Cap on vertices materialised while reading nested mapped items and Boolean bodies.
         /// </summary>
         public long VertexBudget { get; } = MinVertexBudget + (VerticesPerEntity * (long)step.EntityCount);
 
         private long _materialisedVertices;
+        private long _remainingBooleanNodes = 256 + 8L * step.EntityCount;
+
+        public void ChargeBooleanNode(int id)
+        {
+            if (_remainingBooleanNodes-- <= 0)
+                throw new InvalidDataException($"Boolean operands at #{id} exceed the model-wide expansion limit.");
+        }
 
         public void ChargeVertices(int count)
         {
@@ -2800,7 +2823,7 @@ public sealed partial class IfcModel
             if (_materialisedVertices > VertexBudget)
             {
                 throw new InvalidDataException(
-                    $"IFC geometry expands to more than {VertexBudget} vertices (limit for {Step.EntityCount} entities); check for nested IfcMappedItem amplification.");
+                    $"IFC geometry expands to more than {VertexBudget} vertices (limit for {Step.EntityCount} entities); check for nested mapped items or Boolean results.");
             }
         }
     }
@@ -2898,7 +2921,8 @@ public sealed partial class IfcModel
             var mesh = ParseRepresentationItem(ctx, itemEnt, meshName, ref itemMaterial, out var itemParametric);
             if (mesh is null) continue;
             material ??= itemMaterial;
-            ctx.ChargeVertices(mesh.Vertices.Count);
+            // The Boolean reader already charges leaf meshes and triangles emitted by each clip.
+            if (itemParametric?.Boolean is null) ctx.ChargeVertices(mesh.Vertices.Count);
             hasBoolean |= itemParametric?.Boolean is not null;
             parametric = parts.Count == 0 ? itemParametric : null;
             parts.Add(mesh);
@@ -2943,15 +2967,13 @@ public sealed partial class IfcModel
         }
 
         // E. IFCBOOLEANRESULT / IFCBOOLEANCLIPPINGRESULT
-        if (itemEnt.Type.Equals("IFCBOOLEANRESULT", StringComparison.OrdinalIgnoreCase) ||
-            itemEnt.Type.Equals("IFCBOOLEANCLIPPINGRESULT", StringComparison.OrdinalIgnoreCase))
+        if (IsBooleanEntity(itemEnt))
         {
-            var boolRes = ParseBooleanResult(step, itemEnt, ctx.RadiansPerAngleUnit);
-            if (boolRes is null) return null;
+            var boolRes = ParseBooleanResult(ctx, itemEnt, []);
             if (itemEnt.GetRef(1) is int firstOperand)
                 material ??= ctx.GeomToMaterialMap.GetValueOrDefault(firstOperand);
             parametric = new ParametricBody(null, null, boolRes);
-            return boolRes.ToMesh(meshName);
+            return boolRes.ToMesh(meshName, ctx.ChargeVertices);
         }
 
         // F. IFCMAPPEDITEM: MappingTarget * MappingOrigin * mapped representation.
@@ -3384,55 +3406,92 @@ public sealed partial class IfcModel
     private static List<string> ParseStepList(string? raw) =>
         raw is { Length: >= 2 } && raw[0] == '(' && raw[^1] == ')' ? StepEntity.ParseArguments(raw[1..^1]) : [];
 
-    private static IfcBooleanResult? ParseBooleanResult(StepFile step, StepEntity itemEnt, double radiansPerAngleUnit)
+    private const int MaxBooleanDepth = 64;
+
+    private static bool IsBooleanEntity(StepEntity entity) =>
+        entity.Type.Equals("IFCBOOLEANRESULT", StringComparison.OrdinalIgnoreCase)
+        || entity.Type.Equals("IFCBOOLEANCLIPPINGRESULT", StringComparison.OrdinalIgnoreCase);
+
+    private static IfcBooleanResult ParseBooleanResult(GeometryReadContext ctx, StepEntity itemEnt, HashSet<int> active)
     {
-        string? opStr = itemEnt.GetRaw(0);
-        var op = IfcBooleanOperator.Difference;
-        if (opStr?.Contains(".UNION.", StringComparison.OrdinalIgnoreCase) == true)
-            op = IfcBooleanOperator.Union;
-        else if (opStr?.Contains(".INTERSECTION.", StringComparison.OrdinalIgnoreCase) == true)
-            op = IfcBooleanOperator.Intersection;
+        if (active.Contains(itemEnt.Id))
+            throw new InvalidDataException($"Boolean operand cycle at #{itemEnt.Id}.");
+        if (active.Count >= MaxBooleanDepth)
+            throw new InvalidDataException($"Boolean operands at #{itemEnt.Id} exceed the depth limit ({MaxBooleanDepth}).");
+        ctx.ChargeBooleanNode(itemEnt.Id);
+        active.Add(itemEnt.Id);
+
+        var step = ctx.Step;
+        var op = itemEnt.GetRaw(0)?.ToUpperInvariant() switch
+        {
+            ".DIFFERENCE." => IfcBooleanOperator.Difference,
+            ".UNION." => IfcBooleanOperator.Union,
+            ".INTERSECTION." => IfcBooleanOperator.Intersection,
+            _ => throw new InvalidDataException($"Boolean #{itemEnt.Id} has an invalid operator."),
+        };
 
         int? firstOpId = itemEnt.GetRef(1);
         int? secondOpId = itemEnt.GetRef(2);
 
         var boolResult = new IfcBooleanResult { Operator = op };
 
-        if (firstOpId.HasValue)
+        if (step.Find(firstOpId) is { } firstEnt)
         {
-            var firstEnt = step.Find(firstOpId.Value);
-            if (firstEnt is not null)
+            if (IsBooleanEntity(firstEnt))
             {
-                var sweptMesh = ParseSweptSolid(step, firstEnt, "BooleanOperand", radiansPerAngleUnit,
+                boolResult.FirstBoolean = ParseBooleanResult(ctx, firstEnt, active);
+            }
+            else
+            {
+                var sweptMesh = ParseSweptSolid(step, firstEnt, "BooleanOperand", ctx.RadiansPerAngleUnit,
                     out var extruded, out var revolved);
                 boolResult.FirstSolid = extruded;
                 boolResult.FirstRevolved = revolved;
                 if (extruded is null && revolved is null)
                     boolResult.FirstMesh = sweptMesh ?? ParseMeshEntity(step, firstEnt);
+                ctx.ChargeVertices((sweptMesh ?? boolResult.FirstMesh)?.Vertices.Count ?? 0);
             }
         }
 
-        if (secondOpId.HasValue)
+        if (step.Find(secondOpId) is { } secondEnt)
         {
-            var secondEnt = step.Find(secondOpId.Value);
-            if (secondEnt is not null)
+            if (IsBooleanEntity(secondEnt))
             {
-                if (secondEnt.Type.Equals("IFCHALFSPACESOLID", StringComparison.OrdinalIgnoreCase))
-                {
-                    boolResult.SecondHalfSpace = ParseHalfSpaceSolid(step, secondOpId.Value);
-                }
-                else
-                {
-                    var sweptMesh = ParseSweptSolid(step, secondEnt, "BooleanOperand", radiansPerAngleUnit,
-                        out var extruded, out _);
-                    boolResult.SecondSolid = extruded;
-                    if (extruded is null)
-                        boolResult.SecondMesh = sweptMesh ?? ParseMeshEntity(step, secondEnt);
-                }
+                boolResult.SecondBoolean = ParseBooleanResult(ctx, secondEnt, active);
+            }
+            else if (secondEnt.Type.Equals("IFCHALFSPACESOLID", StringComparison.OrdinalIgnoreCase))
+            {
+                boolResult.SecondHalfSpace = ParseHalfSpaceSolid(step, secondEnt.Id);
+            }
+            else
+            {
+                var sweptMesh = ParseSweptSolid(step, secondEnt, "BooleanOperand", ctx.RadiansPerAngleUnit,
+                    out var extruded, out var revolved);
+                boolResult.SecondSolid = extruded;
+                boolResult.SecondRevolved = revolved;
+                if (extruded is null)
+                    boolResult.SecondMesh = sweptMesh ?? ParseMeshEntity(step, secondEnt);
+                ctx.ChargeVertices((sweptMesh ?? boolResult.SecondMesh)?.Vertices.Count ?? 0);
             }
         }
 
+        if (boolResult.FirstSolid is null && boolResult.FirstRevolved is null && boolResult.FirstMesh is null && boolResult.FirstBoolean is null)
+            WarnSkipped("first", firstOpId);
+        if (boolResult.SecondHalfSpace is null && boolResult.SecondSolid is null && boolResult.SecondRevolved is null
+            && boolResult.SecondMesh is null && boolResult.SecondBoolean is null)
+            WarnSkipped("second", secondOpId);
+        else if (boolResult.SecondHalfSpace is null || op == IfcBooleanOperator.Union)
+            ctx.BooleanWarnings.Add($"Boolean #{itemEnt.Id}: {op} with this second operand is not evaluated in the mesh.");
+
+        active.Remove(itemEnt.Id);
         return boolResult;
+
+        void WarnSkipped(string operand, int? id)
+        {
+            var entity = step.Find(id);
+            string description = entity is not null ? $"{entity.Type} #{entity.Id}" : id.HasValue ? $"missing entity #{id}" : "missing reference";
+            ctx.BooleanWarnings.Add($"Boolean #{itemEnt.Id}: skipped {operand} operand ({description}).");
+        }
     }
 
     private static void PlaceBooleanOperands(IfcBooleanResult result, IfcTransform placement)
@@ -3447,29 +3506,40 @@ public sealed partial class IfcModel
                 revolved.Position += placement.Origin;
                 revolved.Axis.Location += placement.Origin;
             }
+            if (result.SecondRevolved is { } secondRevolved)
+            {
+                secondRevolved.Position += placement.Origin;
+                secondRevolved.Axis.Location += placement.Origin;
+            }
         }
         else
         {
             result.FirstMesh ??= result.FirstSolid?.ToMesh() ?? result.FirstRevolved?.ToMesh();
-            result.SecondMesh ??= result.SecondSolid?.ToMesh();
+            result.SecondMesh ??= result.SecondSolid?.ToMesh() ?? result.SecondRevolved?.ToMesh();
             result.FirstSolid = null;
             result.FirstRevolved = null;
             result.SecondSolid = null;
+            result.SecondRevolved = null;
         }
         if (result.FirstMesh is { } firstMesh) result.FirstMesh = placement.ApplyTo(firstMesh);
         if (result.SecondMesh is { } secondMesh) result.SecondMesh = placement.ApplyTo(secondMesh);
 
         if (result.SecondHalfSpace?.BaseSurface is { } plane)
             result.SecondHalfSpace.BaseSurface = new IfcPlane(placement.Apply(plane.Location), placement.ApplyVector(plane.Normal));
+        if (result.FirstBoolean is { } firstBoolean) PlaceBooleanOperands(firstBoolean, placement);
+        if (result.SecondBoolean is { } secondBoolean) PlaceBooleanOperands(secondBoolean, placement);
     }
 
     private static IfcPlane? ParsePlane(StepFile step, int? planeId)
     {
-        if (!planeId.HasValue) return null;
-        var planeEnt = step.Find(planeId.Value);
-        if (planeEnt is null) return null;
+        var planeEnt = step.Find(planeId);
+        if (planeEnt is null || !planeEnt.Type.Equals("IFCPLANE", StringComparison.OrdinalIgnoreCase)
+            || step.Find(planeEnt.GetRef(0)) is not { } placementEntity
+            || !placementEntity.Type.Equals("IFCAXIS2PLACEMENT3D", StringComparison.OrdinalIgnoreCase)
+            || step.Find(placementEntity.GetRef(0)) is not { } point
+            || !point.Type.Equals("IFCCARTESIANPOINT", StringComparison.OrdinalIgnoreCase)) return null;
 
-        var placement = ParseAxis2Placement(step, planeEnt.GetRef(0));
+        var placement = ParseAxis2Placement(step, placementEntity.Id);
         return new IfcPlane(placement.Origin, placement.Z);
     }
 
@@ -3479,12 +3549,14 @@ public sealed partial class IfcModel
         var hsEnt = step.Find(halfSpaceId.Value);
         if (hsEnt is null) return null;
 
-        int? planeId = hsEnt.GetRef(0);
-        var plane = ParsePlane(step, planeId) ?? new IfcPlane();
-        string? rawFlag = hsEnt.GetRaw(1);
-        bool flag = rawFlag is null || !rawFlag.Contains(".F.", StringComparison.OrdinalIgnoreCase);
-
-        return new IfcHalfSpaceSolid(plane, flag);
+        var plane = ParsePlane(step, hsEnt.GetRef(0));
+        if (plane is null) return null;
+        return hsEnt.GetRaw(1)?.ToUpperInvariant() switch
+        {
+            ".T." => new IfcHalfSpaceSolid(plane, agreementFlag: true),
+            ".F." => new IfcHalfSpaceSolid(plane, agreementFlag: false),
+            _ => null,
+        };
     }
 
     private static IfcProfileDef? ParseProfile(StepFile step, int? profileId, out IfcTransform rotation)

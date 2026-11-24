@@ -3282,65 +3282,8 @@ public sealed partial class IfcModel
             itemEnt.Type.Equals("IFCSHELLBASEDSURFACEMODEL", StringComparison.OrdinalIgnoreCase))
         {
             var shellIds = isBrep && itemEnt.GetRef(0) is int shellId ? [shellId] : itemEnt.GetRefList(0);
-
-            var vertices = new List<IfcVector3>();
-            var indices = new List<int>();
-            var pointIndexMap = new Dictionary<int, int>();
-
             var faceIds = shellIds.SelectMany(id => step.Find(id)?.GetRefList(0) ?? []);
-            foreach (int faceId in faceIds)
-            {
-                var faceEnt = step.Find(faceId);
-                if (faceEnt is null) continue;
-
-                var boundIds = faceEnt.GetRefList(0);
-                foreach (int boundId in boundIds)
-                {
-                    var boundEnt = step.Find(boundId);
-                    if (boundEnt is null) continue;
-
-                    int? loopId = boundEnt.GetRef(0);
-                    var loopEnt = step.Find(loopId);
-                    if (loopEnt is null || !loopEnt.Type.Equals("IFCPOLYLOOP", StringComparison.OrdinalIgnoreCase))
-                        continue;
-
-                    var ptIds = loopEnt.GetRefList(0);
-                    var faceIndices = new List<int>(ptIds.Count);
-
-                    foreach (int ptId in ptIds)
-                    {
-                        if (!pointIndexMap.TryGetValue(ptId, out int idx))
-                        {
-                            var ptEnt = step.Find(ptId);
-                            if (ptEnt is not null)
-                            {
-                                string coordStr = ptEnt.GetRaw(0) ?? string.Empty;
-                                var coords = StepEntity.ParseArguments(coordStr.Trim('(', ')'));
-                                double x = coords.Count > 0 && double.TryParse(coords[0], NumberStyles.Float, CultureInfo.InvariantCulture, out double cx) ? cx : 0.0;
-                                double y = coords.Count > 1 && double.TryParse(coords[1], NumberStyles.Float, CultureInfo.InvariantCulture, out double cy) ? cy : 0.0;
-                                double z = coords.Count > 2 && double.TryParse(coords[2], NumberStyles.Float, CultureInfo.InvariantCulture, out double cz) ? cz : 0.0;
-
-                                idx = vertices.Count;
-                                vertices.Add(new IfcVector3(x, y, z));
-                                pointIndexMap[ptId] = idx;
-                            }
-                        }
-                        faceIndices.Add(idx);
-                    }
-
-                    for (int i = 1; i + 1 < faceIndices.Count; i++)
-                    {
-                        indices.Add(faceIndices[0]);
-                        indices.Add(faceIndices[i]);
-                        indices.Add(faceIndices[i + 1]);
-                    }
-                }
-            }
-
-            if (vertices.Count >= 3 && indices.Count >= 3)
-            {
-                return IfcMesh.Create(itemEnt.Id, meshName, vertices, indices);
-            }
+            return ParseFacetedFaces(step, itemEnt, faceIds, meshName);
         }
 
         // IFCTRIANGULATEDFACESET (IFC4)

@@ -154,7 +154,7 @@ public static class IfcIdsValidator
                 foreach (var me in matElems)
                 {
                     string? matVal = GetFacetValue(me.Elements().FirstOrDefault(e => e.Name.LocalName.Equals("value", StringComparison.OrdinalIgnoreCase)));
-                    if (elem.Material is not null && (string.IsNullOrEmpty(matVal) || elem.Material.Name.Contains(matVal, StringComparison.OrdinalIgnoreCase)))
+                    if (elem.AssignedMaterial is { } material && (string.IsNullOrEmpty(matVal) || material.Name.Contains(matVal, StringComparison.OrdinalIgnoreCase)))
                     {
                         matchesMat = true;
                         break;
@@ -211,7 +211,7 @@ public static class IfcIdsValidator
             if (minOccurs == "0") continue;
 
             string? expectedMat = GetFacetValue(mr.Elements().FirstOrDefault(e => e.Name.LocalName.Equals("value", StringComparison.OrdinalIgnoreCase)));
-            if (elem.Material is null)
+            if (elem.AssignedMaterial is not { } material)
             {
                 failures.Add(new IfcIdsFailure
                 {
@@ -224,7 +224,7 @@ public static class IfcIdsValidator
                     Message = $"Element lacks required material assignment (expected '{expectedMat ?? "Any"}')",
                 });
             }
-            else if (!string.IsNullOrEmpty(expectedMat) && !elem.Material.Name.Contains(expectedMat, StringComparison.OrdinalIgnoreCase))
+            else if (!string.IsNullOrEmpty(expectedMat) && !material.Name.Contains(expectedMat, StringComparison.OrdinalIgnoreCase))
             {
                 failures.Add(new IfcIdsFailure
                 {
@@ -234,7 +234,7 @@ public static class IfcIdsValidator
                     ElementName = elem.Name,
                     ElementType = elem.IfcType,
                     FacetType = "Material",
-                    Message = $"Material '{elem.Material.Name}' does not match required '{expectedMat}'",
+                    Message = $"Material '{material.Name}' does not match required '{expectedMat}'",
                 });
             }
         }

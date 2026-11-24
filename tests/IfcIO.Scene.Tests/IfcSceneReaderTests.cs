@@ -195,6 +195,24 @@ public class IfcSceneReaderTests
     }
 
     [Fact]
+    public void Read_PreservesWrappedIfc2x3ColourAndTransparencyInTheScene()
+    {
+        const string styledFitting = """
+            #500=IFCCOLOURRGB($,0.2,0.4,0.8);
+            #501=IFCSURFACESTYLERENDERING(#500,0.25,$,$,$,$,$,$,.NOTDEFINED.);
+            #502=IFCSURFACESTYLE('Blue glass',.BOTH.,(#501));
+            #503=IFCPRESENTATIONSTYLEASSIGNMENT((#502));
+            #504=IFCSTYLEDITEM(#306,(#503),$);
+            """;
+        var scene = Valid(Read(OpenText(PlacedIfc(Millimetre, styledFitting)))).Document;
+        var material = Assert.Single(scene.Materials, candidate => candidate.Name == "Blue glass");
+
+        Assert.Equal(new RgbaColor(51, 102, 204, 191), material.Color);
+        Assert.Equal(material.Id, InstanceOf(scene, 300).MaterialId);
+        Assert.NotEqual(material.Id, InstanceOf(scene, 310).MaterialId);
+    }
+
+    [Fact]
     public void Read_TypeObjectsAndLiningProperties_AreNotElements()
     {
         const string NonProducts = """

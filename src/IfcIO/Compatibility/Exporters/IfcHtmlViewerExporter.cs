@@ -1078,9 +1078,9 @@ canvas#overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%;
 
     private static (double r, double g, double b, double a) GetElementColor(IfcElement elem)
     {
-        if (elem.Material is not null)
+        if (elem.GetEffectiveMaterial() is { } material)
         {
-            return (elem.Material.R, elem.Material.G, elem.Material.B, elem.Material.Alpha);
+            return (material.R, material.G, material.B, material.Alpha);
         }
 
         string type = elem.IfcType.ToUpperInvariant();

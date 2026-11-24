@@ -92,18 +92,18 @@ public static class IfcGlbExporter
             {
 
                 int? matId = null;
-                if (elem.Material is not null)
+                if (elem.GetEffectiveMaterial() is { } material)
                 {
-                    if (!matIndexMap.TryGetValue(elem.Material, out int existingMat))
+                    if (!matIndexMap.TryGetValue(material, out int existingMat))
                     {
                         existingMat = gltfMaterials.Count;
-                        matIndexMap[elem.Material] = existingMat;
+                        matIndexMap[material] = existingMat;
                         gltfMaterials.Add(new MaterialDef
                         {
-                            Name = elem.Material.Name,
+                            Name = material.Name,
                             Pbr = new PbrDef
                             {
-                                BaseColorFactor = [(float)elem.Material.R, (float)elem.Material.G, (float)elem.Material.B, (float)elem.Material.Alpha],
+                                BaseColorFactor = [(float)material.R, (float)material.G, (float)material.B, (float)material.Alpha],
                                 MetallicFactor = 0.1f,
                                 RoughnessFactor = 0.7f,
                             },

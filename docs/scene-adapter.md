@@ -97,7 +97,9 @@ rebases them, for example on `ComputeBounds().Center`, before narrowing them to 
   unit (for example centimetres). Area, volume and weight quantities retain the file's values.
 - An element without a GlobalId in the file gets a new random GlobalId from IfcIO each time it is read, so its
   `SourceId` is not stable.
-- Transparency is not read from files by IfcIO; materials built in memory keep their alpha.
+- Colours and transparency from IFC surface styles are read separately from physical materials. The imported mesh
+  still uses one colour per element: the first readable styled item takes precedence over an associated material or
+  the material of a single layer/profile.
 - Tasks without planned start and finish are left out (IfcIO reads task times from IFC4 files only); their subtasks
   are kept. Task costs and progress are not converted. Openings, ports, grids, zones, systems and cost schedules are
   not converted.

@@ -348,7 +348,12 @@ public class IfcElement
     public IfcExtrudedAreaSolid? Solid { get; set; }
     public IfcRevolvedAreaSolid? RevolvedSolid { get; set; }
     public IfcBooleanResult? BooleanResult { get; set; }
-    public IfcMaterial? Material { get; set; }
+    private IfcMaterial? _material;
+    /// <summary>The assigned material, or the surface style when no material is assigned.</summary>
+    public IfcMaterial? Material { get => _material ?? SurfaceMaterial; set => _material = value; }
+    /// <summary>Explicit visual appearance, separate from the assigned construction material.</summary>
+    public IfcMaterial? SurfaceMaterial { get; set; }
+    internal IfcMaterial? AssignedMaterial => _material;
     public IfcMaterialLayerSetUsage? MaterialLayerSet { get; set; }
     public IfcMaterialProfileSetUsage? MaterialProfileSet { get; set; }
     public List<IfcDistributionPort> Ports { get; } = [];
@@ -360,6 +365,15 @@ public class IfcElement
     /// Gets the polygon mesh representation of the element, either explicitly assigned or generated on demand from its parametric solid or CSG boolean operation.
     /// </summary>
     public IfcMesh? GetEffectiveMesh() => Mesh ?? BooleanResult?.ToMesh() ?? Solid?.ToMesh() ?? RevolvedSolid?.ToMesh();
+
+    /// <summary>Gets the appearance of the element. An explicit style takes precedence over the material.</summary>
+    public IfcMaterial? GetEffectiveMaterial()
+    {
+        if ((SurfaceMaterial ?? _material) is { } material) return material;
+        if (MaterialLayerSet?.ForLayerSet.Layers is { Count: 1 } layers) return layers[0].Material;
+        if (MaterialProfileSet?.ForProfileSet.MaterialProfiles is { Count: 1 } profiles) return profiles[0].Material;
+        return null;
+    }
 
     public IfcPropertySet GetOrCreatePropertySet(string name)
     {

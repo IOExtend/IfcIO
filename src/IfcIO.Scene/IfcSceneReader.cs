@@ -37,7 +37,7 @@ namespace IfcIO.Scene;
 /// <see cref="SceneValue.Unit"/> means dimensionless and the adapter converts no value to SI. Property values are text
 /// as IfcIO reads them, because IfcIO does not report the measure of a value read from a file. A count quantity is a
 /// number with a null unit; length, area, volume and weight quantities are in the file's units, so they are text with
-/// the number as IfcIO reads it. Colour and transparency come from <see cref="IfcElement.Material"/>;
+/// the number as IfcIO reads it. Colour and transparency come from <see cref="IfcElement.GetEffectiveMaterial"/>;
 /// elements without one get a colour for their IFC class. Work schedules become schedules. Openings are not converted.
 /// </para>
 /// </remarks>
@@ -240,7 +240,7 @@ public static class IfcSceneReader
         int geometryId = doc.Geometries.Count + 1;
         doc.Geometries.Add(new SceneGeometry { Id = geometryId, Topology = SceneTopology.Triangles, Vertices = vertices, Indices = [.. source.Indices] });
         var instance = new SceneInstance { ElementId = element.Id, GeometryId = geometryId };
-        if (element.Material is { } material) instance.MaterialId = MaterialId(doc, material, materials);
+        if (element.GetEffectiveMaterial() is { } material) instance.MaterialId = MaterialId(doc, material, materials);
         else instance.Color = DefaultColor(element);
         doc.Instances.Add(instance);
         return null;

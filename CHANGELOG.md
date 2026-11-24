@@ -5,6 +5,7 @@ All notable changes to the `IfcIO` library are documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- STEP import indexes entities by type once, reuses repeated type names, and reads typed arguments from lazy slices.
 - Faceted face import triangulates concave polygons and holes, keeps disjoint bounds as separate regions,
   and omits invalid contours rather than substituting zero coordinates.
 - IFC import reads wrapped and direct surface colours, rendering transparency and material definition styles.

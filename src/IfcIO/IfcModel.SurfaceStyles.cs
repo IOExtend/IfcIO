@@ -9,7 +9,7 @@ public sealed partial class IfcModel
         ReadSurfaceStyles(StepFile step)
     {
         var styles = new Dictionary<int, IfcMaterial>();
-        foreach (var style in step.OfType("IFCSURFACESTYLE"))
+        foreach (var style in step.IndexedOfType("IFCSURFACESTYLE"))
         {
             foreach (int appearanceId in style.GetRefList(2))
             {
@@ -36,7 +36,7 @@ public sealed partial class IfcModel
 
         // A styled item can reference a surface style directly, or through the IFC2x3 assignment wrapper.
         var assignments = new Dictionary<int, IfcMaterial>();
-        foreach (var assignment in step.OfType("IFCPRESENTATIONSTYLEASSIGNMENT"))
+        foreach (var assignment in step.IndexedOfType("IFCPRESENTATIONSTYLEASSIGNMENT"))
         {
             foreach (int styleId in assignment.GetRefList(0))
             {
@@ -48,7 +48,7 @@ public sealed partial class IfcModel
 
         var byStyledItem = new Dictionary<int, IfcMaterial>();
         var byGeometry = new Dictionary<int, IfcMaterial>();
-        foreach (var item in step.OfType("IFCSTYLEDITEM"))
+        foreach (var item in step.IndexedOfType("IFCSTYLEDITEM"))
         {
             foreach (int styleId in item.GetRefList(1))
             {
@@ -62,7 +62,7 @@ public sealed partial class IfcModel
 
         // In a material representation the styled item itself is the appearance; its Item may be unset.
         var byMaterial = new Dictionary<int, IfcMaterial>();
-        foreach (var definition in step.OfType("IFCMATERIALDEFINITIONREPRESENTATION"))
+        foreach (var definition in step.IndexedOfType("IFCMATERIALDEFINITIONREPRESENTATION"))
         {
             if (definition.GetRef(3) is not int materialId || byMaterial.ContainsKey(materialId)) continue;
             foreach (int representationId in definition.GetRefList(2))

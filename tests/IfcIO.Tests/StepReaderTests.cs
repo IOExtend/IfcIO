@@ -5,6 +5,80 @@ namespace IfcIO.Tests;
 
 public class StepReaderTests
 {
+    [Fact]
+    public void OfType_PreservesCasingAndTheLastEntityWithADuplicateId()
+    {
+        using var text = new StringReader("DATA;#1=IFCWALL();#2=ifcwall();#3=IfcWall();#1=IFCSLAB();ENDSEC;");
+        var step = StepReader.Read(text);
+
+        Assert.Collection(step.OfType("IFCWALL"),
+            first => Assert.Equal("ifcwall", first.Type),
+            second => Assert.Equal("IfcWall", second.Type));
+        Assert.Equal(1, Assert.Single(step.OfType("ifcslab")).Id);
+    }
+
+    [Fact]
+    public void OfType_SeesReplacementAndDeletionThroughThePublicDictionary()
+    {
+        using var text = new StringReader("DATA;#1=IFCWALL();#2=IFCSLAB();ENDSEC;");
+        var step = StepReader.Read(text);
+        Assert.Single(step.OfType("ifcwall"));
+
+        var entities = step.Entities;
+        var deferredQuery = step.OfType("IFCWALL");
+        entities[1] = new StepEntity { Id = 1, Type = "IFCSLAB", RawArgs = "" };
+        Assert.Empty(deferredQuery);
+        Assert.Equal(2, step.OfType("ifcslab").Count());
+        entities.Remove(1);
+        Assert.Equal(2, Assert.Single(step.OfType("IFCSLAB")).Id);
+    }
+
+    [Fact]
+    public void OfType_DoesNotReturnAnEntityRemovedDuringEnumeration()
+    {
+        var step = StepReader.Read(new StringReader("DATA;#1=IFCWALL();#2=IFCWALL();ENDSEC;"));
+        using var enumerator = step.OfType("IFCWALL").GetEnumerator();
+        Assert.True(enumerator.MoveNext());
+        Assert.Equal(1, enumerator.Current.Id);
+
+        Assert.True(step.Entities.Remove(2));
+
+        Assert.False(enumerator.MoveNext());
+    }
+
+    [Fact]
+    public void GetRaw_ReusesAFullArgumentOrAnAlreadyMaterializedString()
+    {
+        string payload = "(" + new string('0', 10_000) + ")";
+        var single = new StepEntity { Id = 1, Type = "IFCA", RawArgs = payload };
+        Assert.Same(payload, single.GetRaw(0));
+        var multiple = new StepEntity { Id = 2, Type = "IFCA", RawArgs = payload + ",1" };
+        string materialized = multiple.Arguments[0];
+        Assert.Same(materialized, multiple.GetRaw(0));
+    }
+
+    [Fact]
+    public void TypedAccessorsAndMaterializedArgumentsAgreeOnQuotedAndNestedValues()
+    {
+        var step = StepReader.Read(new StringReader(@"DATA;#10=IFCA('a''b,(c)',(#2,(#3,#4),#5),1.25E2,.t.,$, -9);ENDSEC;"));
+        var entity = step.Find(10)!;
+
+        void Check()
+        {
+            Assert.Equal("a'b,(c)", entity.GetString(0));
+            Assert.Collection(entity.GetRefList(1), first => Assert.Equal(2, first), second => Assert.Equal(5, second));
+            Assert.Equal(125.0, entity.GetReal(2));
+            Assert.True(entity.GetBool(3));
+            Assert.Null(entity.GetRaw(4));
+            Assert.Equal(-9, entity.GetInt(5));
+            Assert.Null(entity.GetString(6));
+        }
+
+        Check();
+        Assert.Equal(6, entity.Arguments.Count);
+        Check();
+    }
+
     [Theory]
     [InlineData(@"\S\D", "\u00C4")]
     [InlineData(@"\PA\\S\D", "\u00C4")]

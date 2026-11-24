@@ -58,6 +58,11 @@ bounds remain separate regions. Invalid contours or faces that exceed the triang
 | `IfcGlbExporter` | Binary glTF 2.0 exporter generating specification-compliant `.glb` files with PBR materials. |
 | `IfcObjExporter` | Wavefront OBJ geometry exporter with MTL material library generation. |
 
+Model import builds a case-insensitive index for its type queries. Public `StepFile.OfType` follows the mutable
+`StepFile.Entities` dictionary, including edits during enumeration. Typed `StepEntity` accessors parse slices
+lazily; `Arguments` materializes the full string list on demand. Model import does not retain the temporary
+`StepFile` or stream model objects incrementally.
+
 ## Coordination & Validation
 
 | Type | Description |

@@ -91,7 +91,8 @@ public sealed class IfcBooleanResult
     /// <summary>
     /// True if this represents an IFCBOOLEANCLIPPINGRESULT (difference with a half-space solid).
     /// </summary>
-    public bool IsClippingResult => SecondHalfSpace is not null || Operator == IfcBooleanOperator.Difference;
+    public bool IsClippingResult => Operator == IfcBooleanOperator.Difference
+        && SecondHalfSpace is not null && (FirstSolid is not null || FirstRevolved is not null);
 
     public IfcBooleanResult() { }
 

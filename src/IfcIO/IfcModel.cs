@@ -1858,7 +1858,9 @@ public sealed partial class IfcModel
             int? shapeDefId = entity.GetRef(6);
             if (shapeDefId.HasValue && ResolveObjectPlacement(geometry, entity.GetRef(5)) is { } placement)
             {
-                var mesh = ParseGeometry(geometry, shapeDefId.Value, name, placement, out var mat, out var solid, out var revSolid, out var boolResult);
+                var mesh = ParseGeometry(geometry, shapeDefId.Value, name, placement, out var mat, out var solid, out var revSolid,
+                    out var boolResult, out bool unwritableBooleanBody);
+                element.HasUnwritableBooleanBody = unwritableBooleanBody;
                 if (mesh is not null)
                 {
                     element.Mesh = mesh;
@@ -2373,7 +2375,7 @@ public sealed partial class IfcModel
             string? mpName = mpEnt.GetString(0);
             int? matId = mpEnt.GetRef(2);
             int? profId = mpEnt.GetRef(3);
-            var prof = ParseProfile(step, profId);
+            var prof = ParseProfile(step, profId, out _);
             if (prof is not null)
             {
                 IfcMaterial? mat = (matId.HasValue && materialMap.TryGetValue(matId.Value, out var m)) ? m : null;
@@ -2539,6 +2541,9 @@ public sealed partial class IfcModel
 
     private int WriteElementShape(StepWriter w, IfcElement element, int bodySubContextId, Dictionary<SurfaceStyleKey, int> styleCache, bool useTessellation)
     {
+        if (element.HasUnwritableBooleanBody && element.BooleanResult is null)
+            throw new InvalidDataException($"Element '{element.Name}' has a Boolean body that cannot be written without losing operands.");
+
         int? styleId = null;
         var appearance = element.GetEffectiveMaterial();
         if (appearance is not null)
@@ -2559,9 +2564,9 @@ public sealed partial class IfcModel
                 $"$,$,({StepWriter.Ref(shapeRepId)})");
         }
 
-        if (element.RevolvedSolid is not null)
+        if (element.RevolvedSolid is { } revolution && CanWriteRevolution(revolution))
         {
-            int solidGeomId = WriteRevolvedAreaSolid(w, element.RevolvedSolid);
+            int solidGeomId = WriteRevolvedAreaSolid(w, revolution);
             if (styleId.HasValue)
             {
                 w.Add("IFCSTYLEDITEM", $"{StepWriter.Ref(solidGeomId)},({StepWriter.Ref(styleId.Value)}),{StepWriter.Str(appearance?.Name)}");
@@ -2579,36 +2584,26 @@ public sealed partial class IfcModel
             {
                 w.Add("IFCSTYLEDITEM", $"{StepWriter.Ref(solidGeomId)},({StepWriter.Ref(styleId.Value)}),{StepWriter.Str(appearance?.Name)}");
             }
-            string repType = element.BooleanResult.IsClippingResult ? "Clipping" : "CSG";
+            string repType = CanWriteClipping(element.BooleanResult) ? "Clipping" : "CSG";
             int shapeRepId = w.Add("IFCSHAPEREPRESENTATION",
                 $"{StepWriter.Ref(bodySubContextId)},'Body',{StepWriter.Str(repType)},({StepWriter.Ref(solidGeomId)})");
             return w.Add("IFCPRODUCTDEFINITIONSHAPE",
                 $"$,$,({StepWriter.Ref(shapeRepId)})");
         }
 
-        if (element.Mesh is not null && element.Mesh.Vertices.Count >= 3 && element.Mesh.Indices.Count >= 3)
+        var mesh = element.Mesh ?? element.RevolvedSolid?.ToMesh();
+        if (mesh is not null && mesh.Vertices.Count >= 3 && mesh.Indices.Count >= 3)
         {
-            int geomId;
-            string repType;
-
-            if (useTessellation)
-            {
-                geomId = WriteMeshTriangulatedFaceSet(w, element.Mesh.Vertices, element.Mesh.Indices);
-                repType = "Tessellation";
-            }
-            else
-            {
-                geomId = WriteMeshFacetedBrep(w, element.Mesh.Vertices, element.Mesh.Indices);
-                repType = "Brep";
-            }
+            var (repType, geomIds) = WriteBodyMesh(w, mesh, useTessellation);
 
             if (styleId.HasValue)
             {
-                w.Add("IFCSTYLEDITEM", $"{StepWriter.Ref(geomId)},({StepWriter.Ref(styleId.Value)}),{StepWriter.Str(appearance?.Name)}");
+                foreach (int geomId in geomIds)
+                    w.Add("IFCSTYLEDITEM", $"{StepWriter.Ref(geomId)},({StepWriter.Ref(styleId.Value)}),{StepWriter.Str(appearance?.Name)}");
             }
 
             int shapeRepId = w.Add("IFCSHAPEREPRESENTATION",
-                $"{StepWriter.Ref(bodySubContextId)},'Body',{StepWriter.Str(repType)},({StepWriter.Ref(geomId)})");
+                $"{StepWriter.Ref(bodySubContextId)},'Body',{StepWriter.Str(repType)},{StepWriter.List(geomIds.Select(StepWriter.Ref))}");
             return w.Add("IFCPRODUCTDEFINITIONSHAPE",
                 $"$,$,({StepWriter.Ref(shapeRepId)})");
         }
@@ -2686,12 +2681,10 @@ public sealed partial class IfcModel
         int firstId = 0;
         if (csg.FirstSolid is not null)
             firstId = WriteExtrudedAreaSolid(w, csg.FirstSolid);
-        else if (csg.FirstRevolved is not null)
-            firstId = WriteRevolvedAreaSolid(w, csg.FirstRevolved);
-        else if (csg.FirstMesh is not null)
-            firstId = useTessellation
-                ? WriteMeshTriangulatedFaceSet(w, csg.FirstMesh.Vertices, csg.FirstMesh.Indices)
-                : WriteMeshFacetedBrep(w, csg.FirstMesh.Vertices, csg.FirstMesh.Indices);
+        else if (csg.FirstRevolved is { } revolution && CanWriteRevolution(revolution))
+            firstId = WriteRevolvedAreaSolid(w, revolution);
+        else if ((csg.FirstMesh ?? csg.FirstRevolved?.ToMesh()) is { } firstMesh)
+            firstId = WriteBooleanMesh(w, firstMesh, useTessellation);
 
         int secondId = 0;
         if (csg.SecondHalfSpace is not null)
@@ -2699,8 +2692,9 @@ public sealed partial class IfcModel
             var hs = csg.SecondHalfSpace;
             var plane = hs.BaseSurface;
             int locPtId = w.Add("IFCCARTESIANPOINT", StepWriter.List(StepWriter.Real(plane.Location.X), StepWriter.Real(plane.Location.Y), StepWriter.Real(plane.Location.Z)));
-            int axisDirId = w.Add("IFCDIRECTION", StepWriter.List(StepWriter.Real(plane.Normal.X), StepWriter.Real(plane.Normal.Y), StepWriter.Real(plane.Normal.Z)));
-            int pl3dId = w.Add("IFCAXIS2PLACEMENT3D", $"{StepWriter.Ref(locPtId)},{StepWriter.Ref(axisDirId)},$");
+            int axisDirId = WriteDirection(w, plane.Normal);
+            int refDirId = WriteDirection(w, FirstProjAxis(plane.Normal.Normalized(), null));
+            int pl3dId = w.Add("IFCAXIS2PLACEMENT3D", $"{StepWriter.Ref(locPtId)},{StepWriter.Ref(axisDirId)},{StepWriter.Ref(refDirId)}");
             int planeId = w.Add("IFCPLANE", StepWriter.Ref(pl3dId));
             string flag = hs.AgreementFlag ? ".T." : ".F.";
             secondId = w.Add("IFCHALFSPACESOLID", $"{StepWriter.Ref(planeId)},{flag}");
@@ -2711,9 +2705,7 @@ public sealed partial class IfcModel
         }
         else if (csg.SecondMesh is not null)
         {
-            secondId = useTessellation
-                ? WriteMeshTriangulatedFaceSet(w, csg.SecondMesh.Vertices, csg.SecondMesh.Indices)
-                : WriteMeshFacetedBrep(w, csg.SecondMesh.Vertices, csg.SecondMesh.Indices);
+            secondId = WriteBooleanMesh(w, csg.SecondMesh, useTessellation);
         }
 
         string op = csg.Operator switch
@@ -2723,19 +2715,38 @@ public sealed partial class IfcModel
             _ => ".DIFFERENCE.",
         };
 
-        string entityType = csg.IsClippingResult ? "IFCBOOLEANCLIPPINGRESULT" : "IFCBOOLEANRESULT";
+        if (firstId == 0 || secondId == 0)
+            throw new InvalidDataException("Cannot write a Boolean result without both operands.");
+
+        string entityType = CanWriteClipping(csg) ? "IFCBOOLEANCLIPPINGRESULT" : "IFCBOOLEANRESULT";
         return w.Add(entityType, $"{op},{StepWriter.Ref(firstId)},{StepWriter.Ref(secondId)}");
     }
 
     private int WriteExtrudedAreaSolid(StepWriter w, IfcExtrudedAreaSolid solid)
     {
         int profileId = WriteProfileDef(w, solid.Profile);
+        var frame = solid.GetProfileFrame();
         int solidPtId = w.Add("IFCCARTESIANPOINT", StepWriter.List(StepWriter.Real(solid.Position.X), StepWriter.Real(solid.Position.Y), StepWriter.Real(solid.Position.Z)));
-        int solidPlacementId = w.Add("IFCAXIS2PLACEMENT3D", $"{StepWriter.Ref(solidPtId)},$,$");
-        int dirId = w.Add("IFCDIRECTION", StepWriter.List(StepWriter.Real(solid.Direction.X), StepWriter.Real(solid.Direction.Y), StepWriter.Real(solid.Direction.Z)));
+        string axis = "$", refDirection = "$";
+        if (frame.Z != IfcVector3.UnitZ)
+        {
+            axis = StepWriter.Ref(WriteDirection(w, frame.Z));
+            refDirection = StepWriter.Ref(WriteDirection(w, frame.X));
+        }
+        int solidPlacementId = w.Add("IFCAXIS2PLACEMENT3D", $"{StepWriter.Ref(solidPtId)},{axis},{refDirection}");
+        int dirId = WriteDirection(w, IfcVector3.UnitZ);
 
         return w.Add("IFCEXTRUDEDAREASOLID", $"{StepWriter.Ref(profileId)},{StepWriter.Ref(solidPlacementId)},{StepWriter.Ref(dirId)},{StepWriter.Real(solid.Depth)}");
     }
+
+    private static int WriteDirection(StepWriter w, IfcVector3 direction) =>
+        w.Add("IFCDIRECTION", StepWriter.List(StepWriter.RealExact(direction.X), StepWriter.RealExact(direction.Y), StepWriter.RealExact(direction.Z)));
+
+    private static bool CanWriteRevolution(IfcRevolvedAreaSolid solid) =>
+        solid.Axis.Location.Z == solid.Position.Z && solid.Axis.Axis.Z == 0 && solid.Axis.Axis != IfcVector3.Zero;
+
+    private static bool CanWriteClipping(IfcBooleanResult result) => result.IsClippingResult
+        && (result.FirstSolid is not null || result.FirstRevolved is { } revolution && CanWriteRevolution(revolution));
 
     private int WriteRevolvedAreaSolid(StepWriter w, IfcRevolvedAreaSolid solid)
     {
@@ -2743,8 +2754,10 @@ public sealed partial class IfcModel
         int solidPtId = w.Add("IFCCARTESIANPOINT", StepWriter.List(StepWriter.Real(solid.Position.X), StepWriter.Real(solid.Position.Y), StepWriter.Real(solid.Position.Z)));
         int solidPlacementId = w.Add("IFCAXIS2PLACEMENT3D", $"{StepWriter.Ref(solidPtId)},$,$");
 
-        int axisLocPtId = w.Add("IFCCARTESIANPOINT", StepWriter.List(StepWriter.Real(solid.Axis.Location.X), StepWriter.Real(solid.Axis.Location.Y), StepWriter.Real(solid.Axis.Location.Z)));
-        int axisDirId = w.Add("IFCDIRECTION", StepWriter.List(StepWriter.Real(solid.Axis.Axis.X), StepWriter.Real(solid.Axis.Axis.Y), StepWriter.Real(solid.Axis.Axis.Z)));
+        // The authored axis is absolute; IFC expresses it relative to Position.
+        var axisLocation = solid.Axis.Location - solid.Position;
+        int axisLocPtId = w.Add("IFCCARTESIANPOINT", StepWriter.List(StepWriter.Real(axisLocation.X), StepWriter.Real(axisLocation.Y), StepWriter.Real(axisLocation.Z)));
+        int axisDirId = WriteDirection(w, solid.Axis.Axis);
         int axisPlacementId = w.Add("IFCAXIS1PLACEMENT", $"{StepWriter.Ref(axisLocPtId)},{StepWriter.Ref(axisDirId)}");
 
         double angle = AngleUnit == IfcPlaneAngleUnit.Degree ? solid.Angle * (180.0 / Math.PI) : solid.Angle;
@@ -2801,7 +2814,7 @@ public sealed partial class IfcModel
 
     /// <summary>
     /// Reads the product shape into one world-space mesh (all items of the body representation merged).
-    /// Parametric outputs describe the first item in its own coordinates, as before (no placement applied).
+    /// Parametric outputs are kept only when they represent the complete body in model coordinates.
     /// </summary>
     private static IfcMesh? ParseGeometry(
         GeometryReadContext ctx,
@@ -2811,12 +2824,14 @@ public sealed partial class IfcModel
         out IfcMaterial? material,
         out IfcExtrudedAreaSolid? solid,
         out IfcRevolvedAreaSolid? revolvedSolid,
-        out IfcBooleanResult? booleanResult)
+        out IfcBooleanResult? booleanResult,
+        out bool unwritableBooleanBody)
     {
         material = null;
         solid = null;
         revolvedSolid = null;
         booleanResult = null;
+        unwritableBooleanBody = false;
         var shapeDef = ctx.Step.Find(shapeDefId);
         if (shapeDef is null) return null;
 
@@ -2831,16 +2846,26 @@ public sealed partial class IfcModel
         foreach (var rep in reps.Where(IsBody).Concat(reps.Where(r => !IsBody(r))))
         {
             IfcMaterial? repMaterial = null;
-            var mesh = ParseRepresentationItems(ctx, rep, meshName, ref repMaterial, out var parametric);
+            var mesh = ParseRepresentationItems(ctx, rep, meshName, ref repMaterial, out var parametric, out bool hasBoolean);
             if (mesh is null) continue;
 
             material = repMaterial;
-            if (parametric is { } body && ctx.KeepParametric)
+            booleanResult = parametric?.Boolean;
+            unwritableBooleanBody = hasBoolean && booleanResult is null;
+            if (parametric is { } body && ctx.KeepParametric && placement.IsTranslationOnly)
             {
                 solid = body.Solid;
+                if (solid is not null) solid.Position += placement.Origin;
                 revolvedSolid = body.Revolved;
-                booleanResult = body.Boolean;
+                if (revolvedSolid is not null)
+                {
+                    revolvedSolid.Position += placement.Origin;
+                    revolvedSolid.Axis.Location += placement.Origin;
+                }
             }
+
+            if (booleanResult is not null && !placement.IsIdentity)
+                PlaceBooleanOperands(booleanResult, placement);
 
             var world = placement.ApplyTo(mesh);
             return IfcMesh.Create(world.Id, meshName, world.Vertices, world.Indices);
@@ -2855,9 +2880,11 @@ public sealed partial class IfcModel
         StepEntity? repEnt,
         string meshName,
         ref IfcMaterial? material,
-        out ParametricBody? parametric)
+        out ParametricBody? parametric,
+        out bool hasBoolean)
     {
         parametric = null;
+        hasBoolean = false;
         if (repEnt is null) return null;
 
         var itemIds = repEnt.GetRefList(3);
@@ -2872,7 +2899,8 @@ public sealed partial class IfcModel
             if (mesh is null) continue;
             material ??= itemMaterial;
             ctx.ChargeVertices(mesh.Vertices.Count);
-            if (parts.Count == 0) parametric = itemParametric;
+            hasBoolean |= itemParametric?.Boolean is not null;
+            parametric = parts.Count == 0 ? itemParametric : null;
             parts.Add(mesh);
         }
 
@@ -2906,10 +2934,11 @@ public sealed partial class IfcModel
         if (mesh is not null) return mesh;
 
         // C/D. IFCEXTRUDEDAREASOLID / IFCREVOLVEDAREASOLID
-        var swept = ParseSweptSolid(step, itemEnt, meshName, ctx.RadiansPerAngleUnit, out var extruded, out var revolved, out _);
+        var swept = ParseSweptSolid(step, itemEnt, meshName, ctx.RadiansPerAngleUnit, out var extruded, out var revolved);
         if (swept is not null)
         {
-            parametric = new ParametricBody(extruded, revolved, null);
+            if (extruded is not null || revolved is not null)
+                parametric = new ParametricBody(extruded, revolved, null);
             return swept;
         }
 
@@ -2941,51 +2970,48 @@ public sealed partial class IfcModel
     }
 
     /// <summary>
-    /// Meshes an IfcExtrudedAreaSolid or IfcRevolvedAreaSolid in the coordinates of its representation and returns
-    /// its parametric form, which keeps only the Position location (as IfcModel stores and writes it).
+    /// Meshes a swept solid in representation coordinates and returns its parametric form
+    /// only when the public solid can reproduce that geometry.
     /// </summary>
     /// <param name="step">The STEP file that holds the solid and the entities it references.</param>
     /// <param name="ent">The IfcExtrudedAreaSolid or IfcRevolvedAreaSolid entity.</param>
     /// <param name="meshName">The name given to the returned mesh.</param>
     /// <param name="radiansPerAngleUnit">Conversion from project plane angle units to radians.</param>
-    /// <param name="extruded">The parametric extrusion, or null when the entity is not an extrusion or cannot be read.</param>
-    /// <param name="revolved">The parametric revolution, or null when the entity is not a revolution or cannot be read.</param>
-    /// <param name="fullPlacement">True when Position or the profile Position rotates, so the parametric form does not describe the mesh.</param>
+    /// <param name="extruded">The equivalent parametric extrusion, if any.</param>
+    /// <param name="revolved">The equivalent parametric revolution, if any.</param>
     private static IfcMesh? ParseSweptSolid(
         StepFile step,
         StepEntity ent,
         string meshName,
         double radiansPerAngleUnit,
         out IfcExtrudedAreaSolid? extruded,
-        out IfcRevolvedAreaSolid? revolved,
-        out bool fullPlacement)
+        out IfcRevolvedAreaSolid? revolved)
     {
         extruded = null;
         revolved = null;
-        fullPlacement = false;
         bool isExtruded = ent.Type.Equals("IFCEXTRUDEDAREASOLID", StringComparison.OrdinalIgnoreCase);
         if (!isExtruded && !ent.Type.Equals("IFCREVOLVEDAREASOLID", StringComparison.OrdinalIgnoreCase)) return null;
 
-        var profile = ParseProfile(step, ent.GetRef(0));
+        var profile = ParseProfile(step, ent.GetRef(0), out var profileRotation);
         if (profile is null) return null;
 
         var position = ParseAxis2Placement(step, ent.GetRef(1));
-        var profileRotation = ParseProfileRotation(step, ent.GetRef(0));
-        fullPlacement = !position.IsTranslationOnly || !profileRotation.IsIdentity;
-
-        // shortcut: with a location-only Position the parametric solid's own meshing is used, so files written by
-        // IfcModel read back unchanged; it differs from IFC for non-+Z extrusion directions (profile frame) and
-        // for revolution axes away from the origin (Axis taken as absolute). Use the IFC path below for both if needed.
         if (isExtruded)
         {
             double depth = ent.GetReal(3) ?? 0.0;
-            extruded = new IfcExtrudedAreaSolid(profile, depth, position.Origin, ParseDirection(step, ent.GetRef(2)));
-            if (!fullPlacement) return extruded.ToMesh(16, meshName);
+            var direction = ParseOptionalDirection(step, ent.GetRef(2)) ?? IfcVector3.UnitZ;
+            if (direction == IfcVector3.UnitZ && profileRotation.IsIdentity)
+            {
+                var solid = new IfcExtrudedAreaSolid(profile, depth, position.Origin, position.Z);
+                var frame = solid.GetProfileFrame();
+                if ((frame.X - position.X).Length <= 1e-9 && (frame.Y - position.Y).Length <= 1e-9)
+                {
+                    extruded = solid;
+                    return solid.ToMesh(16, meshName);
+                }
+            }
 
-            // IFC: profile in the XY plane of Position, swept along ExtrudedDirection (Position coordinates):
-            // extrude along local Z, then shear Z onto the direction.
-            var direction = ParseCoordinates(step.Find(ent.GetRef(2))).Normalized();
-            if (direction == IfcVector3.Zero) direction = IfcVector3.UnitZ;
+            // IFC keeps the profile in the XY plane of Position. Sweep along local Z, then shear Z onto ExtrudedDirection.
             var shear = new IfcTransform(IfcVector3.UnitX, IfcVector3.UnitY, direction, IfcVector3.Zero);
             var local = new IfcExtrudedAreaSolid(profile, depth).ToMesh(16, meshName);
             return position.Multiply(shear).Multiply(profileRotation).ApplyTo(local);
@@ -2993,10 +3019,15 @@ public sealed partial class IfcModel
 
         double angle = ent.GetReal(3) is double fileAngle ? fileAngle * radiansPerAngleUnit : 2.0 * Math.PI;
         var axis = ParseAxis1Placement(step, ent.GetRef(2));
-        revolved = new IfcRevolvedAreaSolid(profile, angle, position.Origin, axis);
-        if (!fullPlacement) return revolved.ToMesh(16, 24, meshName);
+        if (position.IsTranslationOnly && profileRotation.IsIdentity)
+        {
+            axis.Location += position.Origin;
+            revolved = new IfcRevolvedAreaSolid(profile, angle, position.Origin, axis);
+            return revolved.ToMesh(16, 24, meshName);
+        }
 
-        // shortcut: a rotated profile Position is ignored for revolved solids (rare); rotate the profile points first if a model needs it.
+        if (!profileRotation.IsIdentity)
+            profile = new IfcArbitraryClosedProfileDef(profile.GetBoundaryPoints().Select(profileRotation.Apply), profile.ProfileName);
         return position.ApplyTo(new IfcRevolvedAreaSolid(profile, angle, IfcVector3.Zero, axis).ToMesh(16, 24, meshName));
     }
 
@@ -3022,7 +3053,7 @@ public sealed partial class IfcModel
         }
 
         IfcMaterial? material = null;
-        var mesh = ParseRepresentationItems(ctx, ctx.Step.Find(mapEnt.GetRef(1)), meshName, ref material, out _);
+        var mesh = ParseRepresentationItems(ctx, ctx.Step.Find(mapEnt.GetRef(1)), meshName, ref material, out _, out _);
         var result = (mesh is null ? null : ParseAxis2Placement(ctx.Step, mapEnt.GetRef(0)).ApplyTo(mesh), material);
 
         ctx.MapsInProgress.Remove(mapId);
@@ -3087,15 +3118,14 @@ public sealed partial class IfcModel
         var location = ParseCoordinates(step.Find(ent.GetRef(0)));
         if (ent.Type.Equals("IFCAXIS2PLACEMENT2D", StringComparison.OrdinalIgnoreCase))
         {
-            var x2 = FirstProjAxis(IfcVector3.UnitZ, ParseOptionalVector(step, ent.GetRef(1)));
+            var x2 = FirstProjAxis(IfcVector3.UnitZ, ParseOptionalDirection(step, ent.GetRef(1)));
             return new IfcTransform(x2, IfcVector3.Cross(IfcVector3.UnitZ, x2), IfcVector3.UnitZ, location);
         }
 
         if (!ent.Type.Equals("IFCAXIS2PLACEMENT3D", StringComparison.OrdinalIgnoreCase)) return IfcTransform.Identity;
 
-        var z = ParseOptionalVector(step, ent.GetRef(1))?.Normalized() ?? IfcVector3.UnitZ;
-        if (z == IfcVector3.Zero) z = IfcVector3.UnitZ;
-        var x = FirstProjAxis(z, ParseOptionalVector(step, ent.GetRef(2)));
+        var z = ParseOptionalDirection(step, ent.GetRef(1)) ?? IfcVector3.UnitZ;
+        var x = FirstProjAxis(z, ParseOptionalDirection(step, ent.GetRef(2)));
         return new IfcTransform(x, IfcVector3.Cross(z, x), z, location);
     }
 
@@ -3110,8 +3140,8 @@ public sealed partial class IfcModel
 
         bool is3D = ent.Type.Contains("3D", StringComparison.OrdinalIgnoreCase);
         bool nonUniform = ent.Type.EndsWith("NONUNIFORM", StringComparison.OrdinalIgnoreCase);
-        var axis1 = ParseOptionalVector(step, ent.GetRef(0));
-        var axis2 = ParseOptionalVector(step, ent.GetRef(1));
+        var axis1 = ParseOptionalDirection(step, ent.GetRef(0));
+        var axis2 = ParseOptionalDirection(step, ent.GetRef(1));
         var origin = ParseCoordinates(step.Find(ent.GetRef(2)));
         double scale = ent.GetReal(3) ?? 1.0;
 
@@ -3119,8 +3149,7 @@ public sealed partial class IfcModel
         double scaleY = scale, scaleZ = scale;
         if (is3D)
         {
-            z = ParseOptionalVector(step, ent.GetRef(4))?.Normalized() ?? IfcVector3.UnitZ;
-            if (z == IfcVector3.Zero) z = IfcVector3.UnitZ;
+            z = ParseOptionalDirection(step, ent.GetRef(4)) ?? IfcVector3.UnitZ;
             if (nonUniform)
             {
                 scaleY = ent.GetReal(5) ?? scale;
@@ -3153,19 +3182,13 @@ public sealed partial class IfcModel
         return IfcVector3.UnitY;
     }
 
-    /// <summary>Rotation of a parameterized profile about its Position (ParseProfile already applies the Position offset).</summary>
-    private static IfcTransform ParseProfileRotation(StepFile step, int? profileId)
+    private static IfcVector3? ParseOptionalDirection(StepFile step, int? id)
     {
-        var profEnt = step.Find(profileId);
-        if (profEnt is null) return IfcTransform.Identity;
-        var placement = ParseAxis2Placement(step, profEnt.GetRef(2));
-        return placement.Multiply(IfcTransform.Translation(-placement.Origin));
-    }
-
-    private static IfcVector3? ParseOptionalVector(StepFile step, int? id)
-    {
-        var ent = step.Find(id);
-        return ent is null ? null : ParseCoordinates(ent);
+        var direction = ParseCoordinates(step.Find(id));
+        double scale = Math.Max(Math.Abs(direction.X), Math.Max(Math.Abs(direction.Y), Math.Abs(direction.Z)));
+        if (scale == 0 || !double.IsFinite(scale)) return null;
+        // Direction ratios are scale-free, including values too small or large to normalize directly.
+        return new IfcVector3(direction.X / scale, direction.Y / scale, direction.Z / scale).Normalized();
     }
 
     /// <summary>Coordinates of an IfcCartesianPoint or IfcDirection; missing components are 0.</summary>
@@ -3294,44 +3317,72 @@ public sealed partial class IfcModel
             if (ptListEnt is null) return null;
 
             var vertices = new List<IfcVector3>();
-            string rawCoords = ptListEnt.GetRaw(0) ?? string.Empty;
-
-            foreach (var tuple in StepEntity.ParseArguments(rawCoords.Trim('(', ')')))
+            foreach (var tuple in ParseStepList(ptListEnt.GetRaw(0)))
             {
-                var parts = StepEntity.ParseArguments(tuple.Trim('(', ')'));
-                double x = parts.Count > 0 && double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out double px) ? px : 0.0;
-                double y = parts.Count > 1 && double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out double py) ? py : 0.0;
-                double z = parts.Count > 2 && double.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out double pz) ? pz : 0.0;
+                var parts = ParseStepList(tuple);
+                if (parts.Count != 3 || !TryCoordinate(parts[0], out double x)
+                    || !TryCoordinate(parts[1], out double y) || !TryCoordinate(parts[2], out double z)) return null;
                 vertices.Add(new IfcVector3(x, y, z));
             }
 
+            var pointNumbers = ParseStepList(itemEnt.GetRaw(4));
+            // Before IFC4 Addendum 2 this attribute was NormalIndex (a list of triplets).
+            if (pointNumbers.Count > 0 && pointNumbers[0].StartsWith('('))
+                pointNumbers.Clear();
             var indices = new List<int>();
-            string rawTriangles = itemEnt.GetRaw(3) ?? string.Empty;
-            foreach (var triTuple in StepEntity.ParseArguments(rawTriangles.Trim('(', ')')))
+            foreach (var triTuple in ParseStepList(itemEnt.GetRaw(3)))
             {
-                var parts = StepEntity.ParseArguments(triTuple.Trim('(', ')'));
-                if (parts.Count >= 3)
+                var parts = ParseStepList(triTuple);
+                if (parts.Count == 3 && TryVertexIndex(parts[0], out int i0)
+                    && TryVertexIndex(parts[1], out int i1) && TryVertexIndex(parts[2], out int i2))
                 {
-                    if (int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out int i0) &&
-                        int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out int i1) &&
-                        int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out int i2))
-                    {
-                        // STEP 1-based to 0-based
-                        indices.Add(i0 - 1);
-                        indices.Add(i1 - 1);
-                        indices.Add(i2 - 1);
-                    }
+                    indices.Add(i0);
+                    indices.Add(i1);
+                    indices.Add(i2);
                 }
             }
 
             if (vertices.Count >= 3 && indices.Count >= 3)
             {
+                var remap = new int[vertices.Count];
+                foreach (int index in indices) remap[index] = 1;
+                int count = 0;
+                for (int i = 0; i < vertices.Count; i++)
+                {
+                    if (remap[i] == 0) continue;
+                    remap[i] = count;
+                    vertices[count++] = vertices[i];
+                }
+                if (count != vertices.Count)
+                {
+                    vertices.RemoveRange(count, vertices.Count - count);
+                    for (int i = 0; i < indices.Count; i++) indices[i] = remap[indices[i]];
+                }
                 return IfcMesh.Create(itemEnt.Id, meshName, vertices, indices);
+            }
+
+            static bool TryCoordinate(string text, out double value) =>
+                double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value) && double.IsFinite(value);
+
+            bool TryVertexIndex(string text, out int index)
+            {
+                index = 0;
+                if (!int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out int number) || number <= 0)
+                    return false;
+                if (pointNumbers.Count > 0 && (number > pointNumbers.Count
+                    || !int.TryParse(pointNumbers[number - 1], NumberStyles.Integer, CultureInfo.InvariantCulture, out number)))
+                    return false;
+                if (number <= 0 || number > vertices.Count) return false;
+                index = number - 1;
+                return true;
             }
         }
 
         return null;
     }
+
+    private static List<string> ParseStepList(string? raw) =>
+        raw is { Length: >= 2 } && raw[0] == '(' && raw[^1] == ')' ? StepEntity.ParseArguments(raw[1..^1]) : [];
 
     private static IfcBooleanResult? ParseBooleanResult(StepFile step, StepEntity itemEnt, double radiansPerAngleUnit)
     {
@@ -3353,21 +3404,11 @@ public sealed partial class IfcModel
             if (firstEnt is not null)
             {
                 var sweptMesh = ParseSweptSolid(step, firstEnt, "BooleanOperand", radiansPerAngleUnit,
-                    out var extruded, out var revolved, out bool fullPlacement);
-                if (sweptMesh is null)
-                {
-                    boolResult.FirstMesh = ParseMeshEntity(step, firstEnt);
-                }
-                else if (fullPlacement)
-                {
-                    // The parametric operand cannot hold a rotated Position: keep the placed mesh (also written back as such).
-                    boolResult.FirstMesh = sweptMesh;
-                }
-                else
-                {
-                    boolResult.FirstSolid = extruded;
-                    boolResult.FirstRevolved = revolved;
-                }
+                    out var extruded, out var revolved);
+                boolResult.FirstSolid = extruded;
+                boolResult.FirstRevolved = revolved;
+                if (extruded is null && revolved is null)
+                    boolResult.FirstMesh = sweptMesh ?? ParseMeshEntity(step, firstEnt);
             }
         }
 
@@ -3380,26 +3421,46 @@ public sealed partial class IfcModel
                 {
                     boolResult.SecondHalfSpace = ParseHalfSpaceSolid(step, secondOpId.Value);
                 }
-                else if (secondEnt.Type.Equals("IFCEXTRUDEDAREASOLID", StringComparison.OrdinalIgnoreCase))
-                {
-                    int? profId = secondEnt.GetRef(0);
-                    var prof = ParseProfile(step, profId);
-                    if (prof is not null)
-                    {
-                        var pos = ParsePlacement3D(step, secondEnt.GetRef(1));
-                        var dir = ParseDirection(step, secondEnt.GetRef(2));
-                        double depth = secondEnt.GetReal(3) ?? 0.0;
-                        boolResult.SecondSolid = new IfcExtrudedAreaSolid(prof, depth, pos, dir);
-                    }
-                }
                 else
                 {
-                    boolResult.SecondMesh = ParseMeshEntity(step, secondEnt);
+                    var sweptMesh = ParseSweptSolid(step, secondEnt, "BooleanOperand", radiansPerAngleUnit,
+                        out var extruded, out _);
+                    boolResult.SecondSolid = extruded;
+                    if (extruded is null)
+                        boolResult.SecondMesh = sweptMesh ?? ParseMeshEntity(step, secondEnt);
                 }
             }
         }
 
         return boolResult;
+    }
+
+    private static void PlaceBooleanOperands(IfcBooleanResult result, IfcTransform placement)
+    {
+        // The exporter writes identity product placements, so both operands need the same world transform.
+        if (placement.IsTranslationOnly)
+        {
+            if (result.FirstSolid is { } first) first.Position += placement.Origin;
+            if (result.SecondSolid is { } second) second.Position += placement.Origin;
+            if (result.FirstRevolved is { } revolved)
+            {
+                revolved.Position += placement.Origin;
+                revolved.Axis.Location += placement.Origin;
+            }
+        }
+        else
+        {
+            result.FirstMesh ??= result.FirstSolid?.ToMesh() ?? result.FirstRevolved?.ToMesh();
+            result.SecondMesh ??= result.SecondSolid?.ToMesh();
+            result.FirstSolid = null;
+            result.FirstRevolved = null;
+            result.SecondSolid = null;
+        }
+        if (result.FirstMesh is { } firstMesh) result.FirstMesh = placement.ApplyTo(firstMesh);
+        if (result.SecondMesh is { } secondMesh) result.SecondMesh = placement.ApplyTo(secondMesh);
+
+        if (result.SecondHalfSpace?.BaseSurface is { } plane)
+            result.SecondHalfSpace.BaseSurface = new IfcPlane(placement.Apply(plane.Location), placement.ApplyVector(plane.Normal));
     }
 
     private static IfcPlane? ParsePlane(StepFile step, int? planeId)
@@ -3408,19 +3469,8 @@ public sealed partial class IfcModel
         var planeEnt = step.Find(planeId.Value);
         if (planeEnt is null) return null;
 
-        int? pl3dId = planeEnt.GetRef(0);
-        var loc = ParsePlacement3D(step, pl3dId);
-        var normal = IfcVector3.UnitZ;
-        if (pl3dId.HasValue)
-        {
-            var plEnt = step.Find(pl3dId.Value);
-            if (plEnt is not null)
-            {
-                int? axisDirId = plEnt.GetRef(1);
-                if (axisDirId.HasValue) normal = ParseDirection(step, axisDirId);
-            }
-        }
-        return new IfcPlane(loc, normal);
+        var placement = ParseAxis2Placement(step, planeEnt.GetRef(0));
+        return new IfcPlane(placement.Origin, placement.Z);
     }
 
     private static IfcHalfSpaceSolid? ParseHalfSpaceSolid(StepFile step, int? halfSpaceId)
@@ -3437,38 +3487,38 @@ public sealed partial class IfcModel
         return new IfcHalfSpaceSolid(plane, flag);
     }
 
-    private static IfcProfileDef? ParseProfile(StepFile step, int? profileId)
+    private static IfcProfileDef? ParseProfile(StepFile step, int? profileId, out IfcTransform rotation)
     {
-        if (!profileId.HasValue) return null;
-        var profEnt = step.Find(profileId.Value);
+        rotation = IfcTransform.Identity;
+        var profEnt = step.Find(profileId);
         if (profEnt is null) return null;
 
         string pName = profEnt.GetString(1) ?? "Profile";
+        if (profEnt.Type.Equals("IFCARBITRARYCLOSEDPROFILEDEF", StringComparison.OrdinalIgnoreCase))
+        {
+            var pts = ParsePolylinePoints(step, profEnt.GetRef(2));
+            return new IfcArbitraryClosedProfileDef(pts, pName);
+        }
+
+        var placement = ParseAxis2Placement(step, profEnt.GetRef(2));
+        var pos2d = placement.Origin;
+        // The parameterized profile already includes its offset. Rotate about that offset, not about (0,0).
+        rotation = placement.Multiply(IfcTransform.Translation(-pos2d));
         if (profEnt.Type.Equals("IFCRECTANGLEPROFILEDEF", StringComparison.OrdinalIgnoreCase))
         {
             double xDim = profEnt.GetReal(3) ?? 0.0;
             double yDim = profEnt.GetReal(4) ?? 0.0;
-            var pos2d = ParsePlacement2D(step, profEnt.GetRef(2));
             return new IfcRectangleProfileDef(xDim, yDim, pos2d, pName);
         }
 
         if (profEnt.Type.Equals("IFCCIRCLEPROFILEDEF", StringComparison.OrdinalIgnoreCase))
         {
             double radius = profEnt.GetReal(3) ?? 0.0;
-            var pos2d = ParsePlacement2D(step, profEnt.GetRef(2));
             return new IfcCircleProfileDef(radius, pos2d, pName);
-        }
-
-        if (profEnt.Type.Equals("IFCARBITRARYCLOSEDPROFILEDEF", StringComparison.OrdinalIgnoreCase))
-        {
-            int? curveId = profEnt.GetRef(2);
-            var pts = ParsePolylinePoints(step, curveId);
-            return new IfcArbitraryClosedProfileDef(pts, pName);
         }
 
         if (profEnt.Type.Equals("IFCISHAPEPROFILEDEF", StringComparison.OrdinalIgnoreCase))
         {
-            var pos2d = ParsePlacement2D(step, profEnt.GetRef(2));
             double overallWidth = profEnt.GetReal(3) ?? 0.0;
             double overallDepth = profEnt.GetReal(4) ?? 0.0;
             double webThickness = profEnt.GetReal(5) ?? 0.0;
@@ -3479,7 +3529,6 @@ public sealed partial class IfcModel
 
         if (profEnt.Type.Equals("IFCLSHAPEPROFILEDEF", StringComparison.OrdinalIgnoreCase))
         {
-            var pos2d = ParsePlacement2D(step, profEnt.GetRef(2));
             double depth = profEnt.GetReal(3) ?? 0.0;
             double width = profEnt.GetReal(4) ?? depth;
             double thickness = profEnt.GetReal(5) ?? 0.0;
@@ -3489,7 +3538,6 @@ public sealed partial class IfcModel
 
         if (profEnt.Type.Equals("IFCUSHAPEPROFILEDEF", StringComparison.OrdinalIgnoreCase))
         {
-            var pos2d = ParsePlacement2D(step, profEnt.GetRef(2));
             double depth = profEnt.GetReal(3) ?? 0.0;
             double flangeWidth = profEnt.GetReal(4) ?? 0.0;
             double webThickness = profEnt.GetReal(5) ?? 0.0;
@@ -3511,62 +3559,8 @@ public sealed partial class IfcModel
         int? dirId = ent.GetRef(1);
 
         var loc = ParseCoordinates(step.Find(locId));
-        var dir = ParseDirection(step, dirId);
+        var dir = ParseOptionalDirection(step, dirId) ?? IfcVector3.UnitZ;
         return new IfcAxis1Placement(loc, dir);
-    }
-
-    private static IfcVector3 ParsePlacement2D(StepFile step, int? placementId)
-    {
-        if (!placementId.HasValue) return IfcVector3.Zero;
-        var plEnt = step.Find(placementId.Value);
-        if (plEnt is null) return IfcVector3.Zero;
-
-        int? ptId = plEnt.GetRef(0);
-        if (!ptId.HasValue) return IfcVector3.Zero;
-        var ptEnt = step.Find(ptId.Value);
-        if (ptEnt is null) return IfcVector3.Zero;
-
-        string coordStr = ptEnt.GetRaw(0) ?? string.Empty;
-        var coords = StepEntity.ParseArguments(coordStr.Trim('(', ')'));
-        double x = 0.0, y = 0.0;
-        if (coords.Count > 0 && double.TryParse(coords[0], NumberStyles.Float, CultureInfo.InvariantCulture, out double cx)) x = cx;
-        if (coords.Count > 1 && double.TryParse(coords[1], NumberStyles.Float, CultureInfo.InvariantCulture, out double cy)) y = cy;
-        return new IfcVector3(x, y, 0);
-    }
-
-    private static IfcVector3 ParsePlacement3D(StepFile step, int? placementId)
-    {
-        if (!placementId.HasValue) return IfcVector3.Zero;
-        var plEnt = step.Find(placementId.Value);
-        if (plEnt is null) return IfcVector3.Zero;
-
-        int? ptId = plEnt.GetRef(0);
-        if (!ptId.HasValue) return IfcVector3.Zero;
-        var ptEnt = step.Find(ptId.Value);
-        if (ptEnt is null) return IfcVector3.Zero;
-
-        string coordStr = ptEnt.GetRaw(0) ?? string.Empty;
-        var coords = StepEntity.ParseArguments(coordStr.Trim('(', ')'));
-        double x = 0.0, y = 0.0, z = 0.0;
-        if (coords.Count > 0 && double.TryParse(coords[0], NumberStyles.Float, CultureInfo.InvariantCulture, out double cx)) x = cx;
-        if (coords.Count > 1 && double.TryParse(coords[1], NumberStyles.Float, CultureInfo.InvariantCulture, out double cy)) y = cy;
-        if (coords.Count > 2 && double.TryParse(coords[2], NumberStyles.Float, CultureInfo.InvariantCulture, out double cz)) z = cz;
-        return new IfcVector3(x, y, z);
-    }
-
-    private static IfcVector3 ParseDirection(StepFile step, int? dirId)
-    {
-        if (!dirId.HasValue) return IfcVector3.UnitZ;
-        var dirEnt = step.Find(dirId.Value);
-        if (dirEnt is null) return IfcVector3.UnitZ;
-
-        string raw = dirEnt.GetRaw(0) ?? string.Empty;
-        var parts = StepEntity.ParseArguments(raw.Trim('(', ')'));
-        double x = 0.0, y = 0.0, z = 1.0;
-        if (parts.Count > 0 && double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out double dx)) x = dx;
-        if (parts.Count > 1 && double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out double dy)) y = dy;
-        if (parts.Count > 2 && double.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out double dz)) z = dz;
-        return new IfcVector3(x, y, z);
     }
 
     private static List<IfcVector3> ParsePolylinePoints(StepFile step, int? curveId)
@@ -3631,7 +3625,7 @@ public sealed partial class IfcModel
 
     private static bool IsBimProductType(string type) => BimProductTypes.Contains(type);
 
-    private static int WriteMeshTriangulatedFaceSet(StepWriter w, IReadOnlyList<IfcVector3> vertices, IReadOnlyList<int> indices)
+    private static int WriteMeshTriangulatedFaceSet(StepWriter w, IReadOnlyList<IfcVector3> vertices, int[] indices, bool closed)
     {
         var coords = new StringBuilder();
         for (int v = 0; v < vertices.Count; v++)
@@ -3647,7 +3641,7 @@ public sealed partial class IfcModel
         int pointListId = w.Add("IFCCARTESIANPOINTLIST3D", $"({coords})");
 
         var coordIndex = new StringBuilder();
-        int triCount = indices.Count / 3;
+        int triCount = indices.Length / 3;
         for (int i = 0; i < triCount; i++)
         {
             if (i > 0) coordIndex.Append(',');
@@ -3657,16 +3651,17 @@ public sealed partial class IfcModel
                       .Append(indices[i * 3 + 2] + 1).Append(')');
         }
 
-        return w.Add("IFCTRIANGULATEDFACESET", $"{StepWriter.Ref(pointListId)},$,.T.,({coordIndex}),$");
+        return w.Add("IFCTRIANGULATEDFACESET", $"{StepWriter.Ref(pointListId)},$,{(closed ? ".T." : ".F.")},({coordIndex}),$");
     }
 
-    private static int WriteMeshFacetedBrep(StepWriter w, IReadOnlyList<IfcVector3> vertices, IReadOnlyList<int> indices)
+    private static int WriteMeshShell(StepWriter w, IReadOnlyList<IfcVector3> vertices, List<int> indices, bool closed)
     {
-        var pointIds = new int[vertices.Count];
-        for (int v = 0; v < vertices.Count; v++)
+        var pointIds = new Dictionary<int, int>();
+        int PointId(int index)
         {
-            var pt = vertices[v];
-            pointIds[v] = w.Add("IFCCARTESIANPOINT",
+            if (pointIds.TryGetValue(index, out int id)) return id;
+            var pt = vertices[index];
+            return pointIds[index] = w.Add("IFCCARTESIANPOINT",
                 StepWriter.List(StepWriter.Real(pt.X), StepWriter.Real(pt.Y), StepWriter.Real(pt.Z)));
         }
 
@@ -3677,19 +3672,13 @@ public sealed partial class IfcModel
             int i1 = indices[i + 1];
             int i2 = indices[i + 2];
 
-            if ((uint)i0 >= (uint)pointIds.Length || (uint)i1 >= (uint)pointIds.Length || (uint)i2 >= (uint)pointIds.Length)
-            {
-                continue;
-            }
-
             int loopId = w.Add("IFCPOLYLOOP",
-                StepWriter.List(StepWriter.Ref(pointIds[i0]), StepWriter.Ref(pointIds[i1]), StepWriter.Ref(pointIds[i2])));
+                StepWriter.List(StepWriter.Ref(PointId(i0)), StepWriter.Ref(PointId(i1)), StepWriter.Ref(PointId(i2))));
             int boundId = w.Add("IFCFACEOUTERBOUND", $"{StepWriter.Ref(loopId)},.T.");
             faceIds.Add(w.Add("IFCFACE", StepWriter.List(StepWriter.Ref(boundId))));
         }
 
-        int shellId = w.Add("IFCCLOSEDSHELL", StepWriter.List(faceIds.Select(StepWriter.Ref)));
-        return w.Add("IFCFACETEDBREP", StepWriter.Ref(shellId));
+        return w.Add(closed ? "IFCCLOSEDSHELL" : "IFCOPENSHELL", StepWriter.List(faceIds.Select(StepWriter.Ref)));
     }
 
     private readonly record struct SurfaceStyleKey(string Name, double R, double G, double B, double Alpha);

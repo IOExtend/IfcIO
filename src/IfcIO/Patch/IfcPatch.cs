@@ -311,6 +311,7 @@ public static class IfcPatch
             Solid = source.Solid,
             RevolvedSolid = source.RevolvedSolid,
             BooleanResult = source.BooleanResult,
+            HasUnwritableBooleanBody = source.HasUnwritableBooleanBody,
         };
 
         foreach (var pset in source.PropertySets)

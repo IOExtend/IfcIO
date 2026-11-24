@@ -348,6 +348,7 @@ public class IfcElement
     public IfcExtrudedAreaSolid? Solid { get; set; }
     public IfcRevolvedAreaSolid? RevolvedSolid { get; set; }
     public IfcBooleanResult? BooleanResult { get; set; }
+    internal bool HasUnwritableBooleanBody { get; set; }
     private IfcMaterial? _material;
     /// <summary>The assigned material, or the surface style when no material is assigned.</summary>
     public IfcMaterial? Material { get => _material ?? SurfaceMaterial; set => _material = value; }

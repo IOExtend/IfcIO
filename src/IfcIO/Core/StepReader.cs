@@ -13,83 +13,79 @@ public sealed class StepEntity
     public required string RawArgs { get; init; }
 
     private List<string>? _arguments;
+    private List<Range>? _argumentRanges;
 
     /// <summary>Parsed top-level arguments of the entity, respecting nested parentheses and quoted strings.</summary>
-    public IReadOnlyList<string> Arguments => _arguments ??= ParseArguments(RawArgs);
-
-    public string? GetString(int index)
+    public IReadOnlyList<string> Arguments
     {
-        if (index < 0 || index >= Arguments.Count) return null;
-        return DecodeString(Arguments[index]);
-    }
-
-    internal static string? DecodeString(string arg)
-    {
-        if (arg == "$" || arg == "*") return null;
-        if (arg.StartsWith('\'') && arg.EndsWith('\'') && arg.Length >= 2)
+        get
         {
-            return StepWriter.Unescape(arg[1..^1]);
+            _arguments ??= ParseArguments(RawArgs);
+            _argumentRanges = null;
+            return _arguments;
         }
-        return StepWriter.Unescape(arg);
     }
 
-    public int? GetRef(int index)
+    private bool TryGetArgument(int index, out ReadOnlySpan<char> arg)
     {
-        if (index < 0 || index >= Arguments.Count) return null;
-        string arg = Arguments[index];
-        if (arg.StartsWith('#') && int.TryParse(arg.AsSpan(1), NumberStyles.Integer, CultureInfo.InvariantCulture, out int refId))
+        arg = default;
+        if (index < 0) return false;
+        if (_arguments is { } materialized)
         {
-            return refId;
+            if (index >= materialized.Count) return false;
+            arg = materialized[index];
+            return true;
         }
-        return null;
+
+        var ranges = _argumentRanges;
+        if (ranges is null)
+        {
+            // Numeric and reference accessors can use slices of RawArgs without retaining a string per field.
+            ranges = new List<Range>();
+            var scanner = new ArgumentScanner(RawArgs);
+            while (scanner.Next(out var range)) ranges.Add(range);
+            _argumentRanges = ranges;
+        }
+        if (index >= ranges.Count) return false;
+        arg = RawArgs.AsSpan(ranges[index]);
+        return true;
     }
+
+    public string? GetString(int index) => TryGetArgument(index, out var arg) ? DecodeString(arg) : null;
+
+    internal static string? DecodeString(ReadOnlySpan<char> arg)
+    {
+        if (Omitted(arg)) return null;
+        if (arg.Length >= 2 && arg[0] == '\'' && arg[^1] == '\'') arg = arg[1..^1];
+        return arg.IndexOfAny('\'', '\\') < 0 ? arg.ToString() : StepWriter.Unescape(arg.ToString());
+    }
+
+    public int? GetRef(int index) => TryGetArgument(index, out var arg) && ParseRef(arg) is int reference ? reference : null;
+
+    private static int? ParseRef(ReadOnlySpan<char> arg) => !arg.IsEmpty && arg[0] == '#'
+        && int.TryParse(arg[1..], NumberStyles.Integer, CultureInfo.InvariantCulture, out int id) ? id : null;
 
     public List<int> GetRefList(int index)
     {
         var result = new List<int>();
-        if (index < 0 || index >= Arguments.Count) return result;
-        string arg = Arguments[index];
-        if (!arg.StartsWith('(') || !arg.EndsWith(')')) return result;
+        if (!TryGetArgument(index, out var arg) || arg.Length < 2 || arg[0] != '(' || arg[^1] != ')') return result;
 
-        string inner = arg[1..^1];
-        foreach (var item in ParseArguments(inner))
-        {
-            if (item.StartsWith('#') && int.TryParse(item.AsSpan(1), NumberStyles.Integer, CultureInfo.InvariantCulture, out int refId))
-            {
-                result.Add(refId);
-            }
-        }
+        var inner = arg[1..^1];
+        var scanner = new ArgumentScanner(inner);
+        while (scanner.Next(out var range))
+            if (ParseRef(inner[range]) is int reference) result.Add(reference);
         return result;
     }
 
-    public double? GetReal(int index)
-    {
-        if (index < 0 || index >= Arguments.Count) return null;
-        string arg = Arguments[index];
-        if (arg == "$" || arg == "*") return null;
-        if (double.TryParse(arg, NumberStyles.Float, CultureInfo.InvariantCulture, out double val))
-        {
-            return val;
-        }
-        return null;
-    }
+    public double? GetReal(int index) => TryGetArgument(index, out var arg)
+        && double.TryParse(arg, NumberStyles.Float, CultureInfo.InvariantCulture, out double value) ? value : null;
 
-    public int? GetInt(int index)
-    {
-        if (index < 0 || index >= Arguments.Count) return null;
-        string arg = Arguments[index];
-        if (arg == "$" || arg == "*") return null;
-        if (int.TryParse(arg, NumberStyles.Integer, CultureInfo.InvariantCulture, out int val))
-        {
-            return val;
-        }
-        return null;
-    }
+    public int? GetInt(int index) => TryGetArgument(index, out var arg)
+        && int.TryParse(arg, NumberStyles.Integer, CultureInfo.InvariantCulture, out int value) ? value : null;
 
     public bool? GetBool(int index)
     {
-        if (index < 0 || index >= Arguments.Count) return null;
-        string arg = Arguments[index];
+        if (!TryGetArgument(index, out var arg)) return null;
         if (arg.Equals(".T.", StringComparison.OrdinalIgnoreCase)) return true;
         if (arg.Equals(".F.", StringComparison.OrdinalIgnoreCase)) return false;
         return null;
@@ -97,43 +93,68 @@ public sealed class StepEntity
 
     public string? GetRaw(int index)
     {
-        if (index < 0 || index >= Arguments.Count) return null;
-        string arg = Arguments[index];
-        return (arg == "$" || arg == "*") ? null : arg;
+        if (_arguments is { } materialized)
+        {
+            if (index < 0 || index >= materialized.Count) return null;
+            string value = materialized[index];
+            return Omitted(value) ? null : value;
+        }
+        if (!TryGetArgument(index, out var arg) || Omitted(arg)) return null;
+        return arg.Length == RawArgs.Length ? RawArgs : arg.ToString();
     }
+
+    private static bool Omitted(ReadOnlySpan<char> arg) => arg.Length == 1 && arg[0] is '$' or '*';
 
     public static List<string> ParseArguments(string args)
     {
         var result = new List<string>();
-        if (string.IsNullOrWhiteSpace(args)) return result;
+        var scanner = new ArgumentScanner(args);
+        while (scanner.Next(out var range)) result.Add(args[range]);
+        return result;
+    }
 
-        int depth = 0;
-        var text = new StepStringState();
-        int start = 0;
+    private ref struct ArgumentScanner
+    {
+        private readonly ReadOnlySpan<char> _text;
+        private int _next;
 
-        for (int i = 0; i < args.Length; i++)
+        internal ArgumentScanner(ReadOnlySpan<char> text)
         {
-            char c = args[i];
-            if (text.InString || c == '\'')
-                text.Read(c);
-            else
+            _text = text;
+            _next = text.IsWhiteSpace() ? text.Length : 0;
+        }
+
+        internal bool Next(out Range range)
+        {
+            if (_next >= _text.Length)
             {
-                if (c == '(') depth++;
-                else if (c == ')') depth--;
-                else if (c == ',' && depth == 0)
+                range = default;
+                return false;
+            }
+
+            int depth = 0;
+            var state = new StepStringState();
+            int end = _next;
+            for (; end < _text.Length; end++)
+            {
+                char c = _text[end];
+                if (state.InString || c == '\'')
+                    state.Read(c);
+                else
                 {
-                    result.Add(args[start..i].Trim());
-                    start = i + 1;
+                    if (c == '(') depth++;
+                    else if (c == ')') depth--;
+                    else if (c == ',' && depth == 0) break;
                 }
             }
-        }
 
-        if (start < args.Length)
-        {
-            result.Add(args[start..].Trim());
+            int start = _next;
+            _next = end < _text.Length ? end + 1 : end;
+            while (start < end && char.IsWhiteSpace(_text[start])) start++;
+            while (end > start && char.IsWhiteSpace(_text[end - 1])) end--;
+            range = start..end;
+            return true;
         }
-
-        return result;
     }
 }
 
@@ -158,12 +179,33 @@ public sealed class StepFile
     public IReadOnlyList<string> SchemaIdentifiers { get; internal set; } = [];
     internal bool HasSchemaDeclaration { get; set; }
 
-    public Dictionary<int, StepEntity> Entities { get; } = new(4096);
+    private readonly Dictionary<int, StepEntity> _entities = new(4096);
+    private Dictionary<string, List<StepEntity>>? _typeIndex;
+
+    /// <summary>The editable entity dictionary.</summary>
+    public Dictionary<int, StepEntity> Entities => _entities;
+
+    internal Dictionary<int, StepEntity>.ValueCollection EntityValues => _entities.Values;
+    internal int EntityCount => _entities.Count;
+
+    internal void SetEntity(StepEntity entity) => _entities[entity.Id] = entity;
+
+    internal void IndexTypes()
+    {
+        var index = new Dictionary<string, List<StepEntity>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entity in _entities.Values)
+        {
+            if (!index.TryGetValue(entity.Type, out var bucket))
+                index.Add(entity.Type, bucket = []);
+            bucket.Add(entity);
+        }
+        _typeIndex = index;
+    }
 
     /// <summary>Returns all entities matching a given IFC entity type name.</summary>
     public IEnumerable<StepEntity> OfType(string entityType)
     {
-        foreach (var entity in Entities.Values)
+        foreach (var entity in _entities.Values)
         {
             if (entity.Type.Equals(entityType, StringComparison.OrdinalIgnoreCase))
             {
@@ -172,8 +214,12 @@ public sealed class StepFile
         }
     }
 
+    // Only used by the model importer, which neither exposes nor edits the parsed dictionary.
+    internal IEnumerable<StepEntity> IndexedOfType(string entityType) =>
+        _typeIndex is not null && _typeIndex.TryGetValue(entityType, out var bucket) ? bucket : [];
+
     /// <summary>Finds an entity by its #ID, or null if not found.</summary>
-    public StepEntity? Find(int? id) => id.HasValue && Entities.TryGetValue(id.Value, out var e) ? e : null;
+    public StepEntity? Find(int? id) => id.HasValue && _entities.TryGetValue(id.Value, out var e) ? e : null;
 }
 
 /// <summary>
@@ -188,7 +234,9 @@ public static class StepReader
         return Read(reader);
     }
 
-    public static StepFile Read(TextReader reader)
+    public static StepFile Read(TextReader reader) => Read(reader, indexTypes: false);
+
+    internal static StepFile Read(TextReader reader, bool indexTypes)
     {
         var file = new StepFile();
         bool inHeader = false;
@@ -198,6 +246,7 @@ public static class StepReader
         bool commentStar = false;
         bool possibleComment = false;
         var statement = new StringBuilder(256);
+        var names = new Dictionary<string, string>(StringComparer.Ordinal);
         // Physical line breaks are not characters in STEP. Do not trim a line:
         // spaces can be significant when a string continues on the next line.
         while (reader.ReadLine() is { } line)
@@ -245,7 +294,7 @@ public static class StepReader
                         else if (inHeader)
                             ParseHeaderStatement(text, file);
                         else if (inData)
-                            ParseDataStatement(text, file);
+                            ParseDataStatement(text, file, names);
                         continue;
                     }
                     if (statement.Length == 0 && char.IsWhiteSpace(c)) continue;
@@ -261,6 +310,7 @@ public static class StepReader
         if (statement.Length != 0 || possibleComment || inHeader || inData)
             throw new InvalidDataException("Incomplete STEP statement or section.");
 
+        if (indexTypes) file.IndexTypes();
         return file;
     }
 
@@ -324,7 +374,7 @@ public static class StepReader
         }
     }
 
-    private static void ParseDataStatement(string statement, StepFile file)
+    private static void ParseDataStatement(string statement, StepFile file, Dictionary<string, string> names)
     {
         if (!statement.StartsWith('#')) return;
 
@@ -342,15 +392,29 @@ public static class StepReader
         int closeParen = statement.LastIndexOf(')');
         if (closeParen <= openParen) return;
 
-        string type = statement[(eqIdx + 1)..openParen].Trim();
+        string type = InternTypeName(statement.AsSpan(eqIdx + 1, openParen - eqIdx - 1).Trim(), names);
         string rawArgs = statement[(openParen + 1)..closeParen];
 
-        file.Entities[id] = new StepEntity
+        file.SetEntity(new StepEntity
         {
             Id = id,
             Type = type,
             RawArgs = rawArgs,
-        };
+        });
+    }
+
+    private static string InternTypeName(ReadOnlySpan<char> name, Dictionary<string, string> names)
+    {
+#if NET9_0_OR_GREATER
+        if (names.GetAlternateLookup<ReadOnlySpan<char>>().TryGetValue(name, out string? existing))
+            return existing;
+        string value = name.ToString();
+#else
+        string value = name.ToString();
+        if (names.TryGetValue(value, out string? existing)) return existing;
+#endif
+        names.Add(value, value);
+        return value;
     }
 }
 

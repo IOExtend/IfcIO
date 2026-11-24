@@ -1579,7 +1579,7 @@ public sealed partial class IfcModel
     {
         ArgumentNullException.ThrowIfNull(reader);
 
-        var step = StepReader.Read(reader);
+        var step = StepReader.Read(reader, indexTypes: true);
         var schema = ReadSchema(step);
 
         var model = new IfcModel
@@ -1591,12 +1591,12 @@ public sealed partial class IfcModel
         model.Storeys.Clear(); // Clear default storey
 
         // 1. Parse Project, Building
-        var projectEntity = step.OfType("IFCPROJECT").FirstOrDefault();
+        var projectEntity = step.IndexedOfType("IFCPROJECT").FirstOrDefault();
         if (projectEntity is not null)
         {
             model.ProjectName = projectEntity.GetString(2) ?? model.ProjectName;
         }
-        var buildingEntity = step.OfType("IFCBUILDING").FirstOrDefault();
+        var buildingEntity = step.IndexedOfType("IFCBUILDING").FirstOrDefault();
         if (buildingEntity is not null)
         {
             model.BuildingName = buildingEntity.GetString(2) ?? model.BuildingName;
@@ -1604,7 +1604,7 @@ public sealed partial class IfcModel
 
         // 1b. Units: geometry is kept in model length units. A unit without an IfcLengthUnit
         // counterpart (e.g. centimetres) is converted to metres while reading.
-        var assignment = step.Find(projectEntity?.GetRef(8)) ?? step.OfType("IFCUNITASSIGNMENT").FirstOrDefault();
+        var assignment = step.Find(projectEntity?.GetRef(8)) ?? step.IndexedOfType("IFCUNITASSIGNMENT").FirstOrDefault();
         double? fileMetresPerUnit = ParseProjectUnitFactor(step, assignment, ".LENGTHUNIT.");
         double geometryScale = 1.0;
         if (fileMetresPerUnit.HasValue)
@@ -1622,7 +1622,7 @@ public sealed partial class IfcModel
 
         // 2. Parse Storeys
         var storeyMap = new Dictionary<int, IfcBuildingStorey>();
-        foreach (var sEnt in step.OfType("IFCBUILDINGSTOREY"))
+        foreach (var sEnt in step.IndexedOfType("IFCBUILDINGSTOREY"))
         {
             var storey = new IfcBuildingStorey
             {
@@ -1645,7 +1645,7 @@ public sealed partial class IfcModel
 
         // 4. Map Elements to Storeys
         var elementToStoreyMap = new Dictionary<int, IfcBuildingStorey>();
-        foreach (var relSpatial in step.OfType("IFCRELCONTAINEDINSPATIALSTRUCTURE"))
+        foreach (var relSpatial in step.IndexedOfType("IFCRELCONTAINEDINSPATIALSTRUCTURE"))
         {
             int? structId = relSpatial.GetRef(5);
             if (structId.HasValue && storeyMap.TryGetValue(structId.Value, out var targetStorey))
@@ -1660,7 +1660,7 @@ public sealed partial class IfcModel
 
         // 5. Parse Property Sets and Quantity Sets
         var psetMap = new Dictionary<int, IfcPropertySet>();
-        foreach (var psetEnt in step.OfType("IFCPROPERTYSET"))
+        foreach (var psetEnt in step.IndexedOfType("IFCPROPERTYSET"))
         {
             string psetName = psetEnt.GetString(2) ?? "PropertySet";
             var pset = new IfcPropertySet(psetName);
@@ -1681,7 +1681,7 @@ public sealed partial class IfcModel
         }
 
         var qsetMap = new Dictionary<int, IfcQuantitySet>();
-        foreach (var qsetEnt in step.OfType("IFCELEMENTQUANTITY"))
+        foreach (var qsetEnt in step.IndexedOfType("IFCELEMENTQUANTITY"))
         {
             string qsetName = qsetEnt.GetString(2) ?? "BaseQuantities";
             string? desc = qsetEnt.GetString(3);
@@ -1729,7 +1729,7 @@ public sealed partial class IfcModel
 
         var elementPropertySets = new Dictionary<int, List<IfcPropertySet>>();
         var elementQuantitySets = new Dictionary<int, List<IfcQuantitySet>>();
-        foreach (var relProps in step.OfType("IFCRELDEFINESBYPROPERTIES"))
+        foreach (var relProps in step.IndexedOfType("IFCRELDEFINESBYPROPERTIES"))
         {
             int? propDefId = relProps.GetRef(5);
             if (!propDefId.HasValue) continue;
@@ -1773,7 +1773,7 @@ public sealed partial class IfcModel
         var defaultStorey = model.Storeys[0];
         var allElementsMap = new Dictionary<int, IfcElement>();
 
-        foreach (var entity in step.Entities.Values)
+        foreach (var entity in step.EntityValues)
         {
             if (!IsBimProductType(entity.Type)) continue;
 
@@ -1897,7 +1897,7 @@ public sealed partial class IfcModel
         }
 
         // 7. Parse Voids (IFCRELVOIDSELEMENT) and Fillings (IFCRELFILLSELEMENT)
-        foreach (var relVoids in step.OfType("IFCRELVOIDSELEMENT"))
+        foreach (var relVoids in step.IndexedOfType("IFCRELVOIDSELEMENT"))
         {
             int? hostId = relVoids.GetRef(4);
             int? openId = relVoids.GetRef(5);
@@ -1913,7 +1913,7 @@ public sealed partial class IfcModel
             }
         }
 
-        foreach (var relFills in step.OfType("IFCRELFILLSELEMENT"))
+        foreach (var relFills in step.IndexedOfType("IFCRELFILLSELEMENT"))
         {
             int? openId = relFills.GetRef(4);
             int? fillId = relFills.GetRef(5);
@@ -1927,7 +1927,7 @@ public sealed partial class IfcModel
         }
 
         // 8. Parse Space Boundaries (IFCRELSPACEBOUNDARY)
-        foreach (var relBound in step.OfType("IFCRELSPACEBOUNDARY"))
+        foreach (var relBound in step.IndexedOfType("IFCRELSPACEBOUNDARY"))
         {
             int? spaceId = relBound.GetRef(4);
             int? relElemId = relBound.GetRef(5);
@@ -1959,7 +1959,7 @@ public sealed partial class IfcModel
         // 9. Parse Systems & Groups (IFCSYSTEM, IFCDISTRIBUTIONSYSTEM, IFCGROUP, IFCRELASSIGNSTOGROUP)
         var groupMap = new Dictionary<int, IfcGroup>();
 
-        foreach (var sysEnt in step.OfType("IFCSYSTEM").Concat(step.OfType("IFCDISTRIBUTIONSYSTEM")))
+        foreach (var sysEnt in step.IndexedOfType("IFCSYSTEM").Concat(step.IndexedOfType("IFCDISTRIBUTIONSYSTEM")))
         {
             string sysGuid = sysEnt.GetString(0) ?? IfcGuid.NewGuid();
             string sysName = sysEnt.GetString(2) ?? "System";
@@ -1977,7 +1977,7 @@ public sealed partial class IfcModel
             groupMap[sysEnt.Id] = sys;
         }
 
-        foreach (var grpEnt in step.OfType("IFCGROUP"))
+        foreach (var grpEnt in step.IndexedOfType("IFCGROUP"))
         {
             if (groupMap.ContainsKey(grpEnt.Id)) continue;
 
@@ -1995,7 +1995,7 @@ public sealed partial class IfcModel
             groupMap[grpEnt.Id] = grp;
         }
 
-        foreach (var zoneEnt in step.OfType("IFCZONE"))
+        foreach (var zoneEnt in step.IndexedOfType("IFCZONE"))
         {
             string zoneGuid = zoneEnt.GetString(0) ?? IfcGuid.NewGuid();
             string zName = zoneEnt.GetString(2) ?? "Zone";
@@ -2011,7 +2011,7 @@ public sealed partial class IfcModel
             groupMap[zoneEnt.Id] = zone;
         }
 
-        foreach (var relGroup in step.OfType("IFCRELASSIGNSTOGROUP"))
+        foreach (var relGroup in step.IndexedOfType("IFCRELASSIGNSTOGROUP"))
         {
             int? groupId = relGroup.GetRef(6);
             if (groupId.HasValue && groupMap.TryGetValue(groupId.Value, out var targetGroup))
@@ -2036,7 +2036,7 @@ public sealed partial class IfcModel
 
         // 9b. Parse 4D Construction Work Schedules (IFCWORKSCHEDULE, IFCTASK, IFCTASKTIME, IFCSCHEDULETIMECONTROL, IFCRELASSIGNSTOPROCESS, IFCRELSEQUENCE)
         var taskMap = new Dictionary<int, Model.Sequence.IfcTask>();
-        foreach (var tEnt in step.OfType("IFCTASK"))
+        foreach (var tEnt in step.IndexedOfType("IFCTASK"))
         {
             string tGuid = tEnt.GetString(0) ?? IfcGuid.NewGuid();
             string tName = tEnt.GetString(2) ?? "Task";
@@ -2075,7 +2075,7 @@ public sealed partial class IfcModel
             taskMap[tEnt.Id] = task;
         }
 
-        foreach (var wsEnt in step.OfType("IFCWORKSCHEDULE"))
+        foreach (var wsEnt in step.IndexedOfType("IFCWORKSCHEDULE"))
         {
             string wsGuid = wsEnt.GetString(0) ?? IfcGuid.NewGuid();
             string wsName = wsEnt.GetString(2) ?? "Schedule";
@@ -2093,7 +2093,7 @@ public sealed partial class IfcModel
         }
 
         // Connect tasks to elements via IFCRELASSIGNSTOPROCESS
-        foreach (var relProc in step.OfType("IFCRELASSIGNSTOPROCESS"))
+        foreach (var relProc in step.IndexedOfType("IFCRELASSIGNSTOPROCESS"))
         {
             var procRef = relProc.GetRef(6);
             if (procRef.HasValue && taskMap.TryGetValue(procRef.Value, out var task))
@@ -2109,7 +2109,7 @@ public sealed partial class IfcModel
         }
 
         // Connect sequence dependencies via IFCRELSEQUENCE
-        foreach (var relSeq in step.OfType("IFCRELSEQUENCE"))
+        foreach (var relSeq in step.IndexedOfType("IFCRELSEQUENCE"))
         {
             var relProcRef = relSeq.GetRef(4);
             var relSuccRef = relSeq.GetRef(5);
@@ -2128,7 +2128,7 @@ public sealed partial class IfcModel
 
         // 9c. Parse 5D Cost Schedules & Cost Items (IFCCOSTSCHEDULE, IFCCOSTITEM, IFCAPPLIEDVALUE, IFCRELASSIGNSTOCONTROL, IFCRELNESTING)
         var costItemMap = new Dictionary<int, Model.Cost.IfcCostItem>();
-        foreach (var ciEnt in step.OfType("IFCCOSTITEM"))
+        foreach (var ciEnt in step.IndexedOfType("IFCCOSTITEM"))
         {
             string ciGuid = ciEnt.GetString(0) ?? IfcGuid.NewGuid();
             string ciName = ciEnt.GetString(2) ?? "Cost Item";
@@ -2187,7 +2187,7 @@ public sealed partial class IfcModel
             costItemMap[ciEnt.Id] = ci;
         }
 
-        foreach (var csEnt in step.OfType("IFCCOSTSCHEDULE"))
+        foreach (var csEnt in step.IndexedOfType("IFCCOSTSCHEDULE"))
         {
             string csGuid = csEnt.GetString(0) ?? IfcGuid.NewGuid();
             string csName = csEnt.GetString(2) ?? "Cost Schedule";
@@ -2213,7 +2213,7 @@ public sealed partial class IfcModel
         }
 
         // Connect sub-items via IFCRELNESTING
-        foreach (var relNest in step.OfType("IFCRELNESTING"))
+        foreach (var relNest in step.IndexedOfType("IFCRELNESTING"))
         {
             int? parentRef = relNest.GetRef(4);
             if (parentRef.HasValue && costItemMap.TryGetValue(parentRef.Value, out var parentItem))
@@ -2229,7 +2229,7 @@ public sealed partial class IfcModel
         }
 
         // Connect control assignments via IFCRELASSIGNSTOCONTROL
-        foreach (var relCtrl in step.OfType("IFCRELASSIGNSTOCONTROL"))
+        foreach (var relCtrl in step.IndexedOfType("IFCRELASSIGNSTOCONTROL"))
         {
             var ctrlRef = relCtrl.GetRef(6);
             if (!ctrlRef.HasValue) continue;
@@ -2316,7 +2316,7 @@ public sealed partial class IfcModel
 
         // 10. Parse Materials & Composite Systems (IFCMATERIAL, IFCMATERIALLAYER, IFCMATERIALLAYERSET, IFCMATERIALLAYERSETUSAGE)
         var materialMap = new Dictionary<int, IfcMaterial>();
-        foreach (var matEnt in step.OfType("IFCMATERIAL"))
+        foreach (var matEnt in step.IndexedOfType("IFCMATERIAL"))
         {
             string name = matEnt.GetString(0) ?? "Material";
             var material = materialAppearances.TryGetValue(matEnt.Id, out var appearance)
@@ -2327,7 +2327,7 @@ public sealed partial class IfcModel
         }
 
         var layerMap = new Dictionary<int, IfcMaterialLayer>();
-        foreach (var layEnt in step.OfType("IFCMATERIALLAYER"))
+        foreach (var layEnt in step.IndexedOfType("IFCMATERIALLAYER"))
         {
             int? matId = layEnt.GetRef(0);
             IfcMaterial mat = (matId.HasValue && materialMap.TryGetValue(matId.Value, out var m))
@@ -2342,7 +2342,7 @@ public sealed partial class IfcModel
         }
 
         var layerSetMap = new Dictionary<int, IfcMaterialLayerSet>();
-        foreach (var lsEnt in step.OfType("IFCMATERIALLAYERSET"))
+        foreach (var lsEnt in step.IndexedOfType("IFCMATERIALLAYERSET"))
         {
             var layIds = lsEnt.GetRefList(0);
             string lsName = lsEnt.GetString(1) ?? "Material Layer Set";
@@ -2354,7 +2354,7 @@ public sealed partial class IfcModel
         }
 
         var layerSetUsageMap = new Dictionary<int, IfcMaterialLayerSetUsage>();
-        foreach (var usageEnt in step.OfType("IFCMATERIALLAYERSETUSAGE"))
+        foreach (var usageEnt in step.IndexedOfType("IFCMATERIALLAYERSETUSAGE"))
         {
             int? lsId = usageEnt.GetRef(0);
             if (lsId.HasValue && layerSetMap.TryGetValue(lsId.Value, out var ls))
@@ -2368,7 +2368,7 @@ public sealed partial class IfcModel
 
         // 11. Parse Material Profile Sets (IFCMATERIALPROFILE, IFCMATERIALPROFILESET, IFCMATERIALPROFILESETUSAGE)
         var materialProfileMap = new Dictionary<int, IfcMaterialProfile>();
-        foreach (var mpEnt in step.OfType("IFCMATERIALPROFILE"))
+        foreach (var mpEnt in step.IndexedOfType("IFCMATERIALPROFILE"))
         {
             string? mpName = mpEnt.GetString(0);
             int? matId = mpEnt.GetRef(2);
@@ -2382,7 +2382,7 @@ public sealed partial class IfcModel
         }
 
         var profileSetMap = new Dictionary<int, IfcMaterialProfileSet>();
-        foreach (var psEnt in step.OfType("IFCMATERIALPROFILESET"))
+        foreach (var psEnt in step.IndexedOfType("IFCMATERIALPROFILESET"))
         {
             string psName = psEnt.GetString(0) ?? "Material Profile Set";
             string? psDesc = psEnt.GetString(1);
@@ -2394,7 +2394,7 @@ public sealed partial class IfcModel
         }
 
         var profileSetUsageMap = new Dictionary<int, IfcMaterialProfileSetUsage>();
-        foreach (var usageEnt in step.OfType("IFCMATERIALPROFILESETUSAGE"))
+        foreach (var usageEnt in step.IndexedOfType("IFCMATERIALPROFILESETUSAGE"))
         {
             int? psId = usageEnt.GetRef(0);
             if (psId.HasValue && profileSetMap.TryGetValue(psId.Value, out var ps))
@@ -2405,7 +2405,7 @@ public sealed partial class IfcModel
         }
 
         // 12. Parse Material Associations (IFCRELASSOCIATESMATERIAL)
-        foreach (var relMat in step.OfType("IFCRELASSOCIATESMATERIAL"))
+        foreach (var relMat in step.IndexedOfType("IFCRELASSOCIATESMATERIAL"))
         {
             var elemIds = relMat.GetRefList(4);
             int? matRelId = relMat.GetRef(5);
@@ -2441,7 +2441,7 @@ public sealed partial class IfcModel
 
         // 13. Parse MEP Distribution Ports & Network Connectivity
         var portMap = new Dictionary<int, IfcDistributionPort>();
-        foreach (var portEnt in step.OfType("IFCDISTRIBUTIONPORT"))
+        foreach (var portEnt in step.IndexedOfType("IFCDISTRIBUTIONPORT"))
         {
             string portGuid = portEnt.GetString(0) ?? IfcGuid.NewGuid();
             string portName = portEnt.GetString(2) ?? "Port";
@@ -2474,7 +2474,7 @@ public sealed partial class IfcModel
             portMap[portEnt.Id] = port;
         }
 
-        foreach (var relPortElem in step.OfType("IFCRELCONNECTSPORTTOELEMENT"))
+        foreach (var relPortElem in step.IndexedOfType("IFCRELCONNECTSPORTTOELEMENT"))
         {
             int? portId = relPortElem.GetRef(4);
             int? elemId = relPortElem.GetRef(5);
@@ -2490,7 +2490,7 @@ public sealed partial class IfcModel
             }
         }
 
-        foreach (var relPorts in step.OfType("IFCRELCONNECTSPORTS"))
+        foreach (var relPorts in step.IndexedOfType("IFCRELCONNECTSPORTS"))
         {
             int? portId1 = relPorts.GetRef(4);
             int? portId2 = relPorts.GetRef(5);
@@ -2777,7 +2777,7 @@ public sealed partial class IfcModel
         /// Cap on vertices materialised while reading, linear in the file size: nested IfcMappedItems can
         /// otherwise multiply a small file into exponentially many vertices.
         /// </summary>
-        public long VertexBudget { get; } = MinVertexBudget + (VerticesPerEntity * (long)step.Entities.Count);
+        public long VertexBudget { get; } = MinVertexBudget + (VerticesPerEntity * (long)step.EntityCount);
 
         private long _materialisedVertices;
 
@@ -2787,7 +2787,7 @@ public sealed partial class IfcModel
             if (_materialisedVertices > VertexBudget)
             {
                 throw new InvalidDataException(
-                    $"IFC geometry expands to more than {VertexBudget} vertices (limit for {Step.Entities.Count} entities); check for nested IfcMappedItem amplification.");
+                    $"IFC geometry expands to more than {VertexBudget} vertices (limit for {Step.EntityCount} entities); check for nested IfcMappedItem amplification.");
             }
         }
     }
@@ -3072,7 +3072,7 @@ public sealed partial class IfcModel
     /// <summary>WorldCoordinateSystem of the 3D 'Model' context: absolute placements are relative to it.</summary>
     private static IfcTransform ParseWorldCoordinateSystem(StepFile step)
     {
-        var contexts = step.OfType("IFCGEOMETRICREPRESENTATIONCONTEXT").ToList();
+        var contexts = step.IndexedOfType("IFCGEOMETRICREPRESENTATIONCONTEXT");
         var model = contexts.FirstOrDefault(c => string.Equals(c.GetString(1), "Model", StringComparison.OrdinalIgnoreCase))
             ?? contexts.FirstOrDefault(c => c.GetInt(2) == 3);
         return model is null ? IfcTransform.Identity : ParseAxis2Placement(step, model.GetRef(4));

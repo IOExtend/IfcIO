@@ -49,6 +49,19 @@ among generated product GlobalIds and does not rewrite explicit GlobalIds.
 For faceted faces, the reader triangulates planar concave bounds and holes without adding vertices. Disjoint
 bounds remain separate regions. Invalid contours or faces that exceed the triangulation work limit are omitted.
 
+Imported meshes use world coordinates. If a swept body cannot be represented by one equivalent parametric
+solid, the reader keeps its placed mesh instead; IFC export writes that mesh rather than a partial or
+misplaced solid. Boolean operands also use placed meshes where necessary. Applying arbitrary solid-to-solid
+Boolean operations to the mesh is not supported; the mesher clips against half-spaces only.
+IFC export rejects compound Boolean bodies and Boolean results with missing operands rather than
+writing a mesh that drops the operations or an invalid STEP reference.
+
+The reader uses standard IFC sweep coordinates. Older IfcIO exports that encoded a tilted authored extrusion
+without its profile frame, or a translated revolution's axis in absolute coordinates, may reopen differently.
+New exports write the extrusion frame and the revolution's local axis explicitly.
+Revolutions whose axis does not lie in the authored profile plane are exported as a mesh.
+For non-tessellated mesh export, disconnected closed shells are written separately and open meshes use a surface model.
+
 ## Import & Export
 
 | Type | Description |

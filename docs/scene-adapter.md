@@ -79,10 +79,6 @@ rebases them, for example on `ComputeBounds().Center`, before narrowing them to 
 
 ## Limits
 
-- **IFC4 tessellated geometry is not read.** IfcIO's reader returns no mesh for `IfcTriangulatedFaceSet`, including
-  the one IfcIO itself writes for IFC4 models: the point and index lists lose their inner brackets while being parsed,
-  so no triangle is found. Such elements are in the scene without geometry and reported as `no-geometry`. Verified
-  with an IFC4 model saved by IfcIO and opened again; a test pins this behaviour.
 - Mapped items (`IfcMappedItem`) are baked into each element's world mesh, so shared geometry is not shared in the
   scene.
 - IfcIO places an element in a storey only through `IfcRelContainedInSpatialStructure`. Elements contained in the site

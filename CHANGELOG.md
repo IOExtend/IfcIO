@@ -5,6 +5,12 @@ All notable changes to the `IfcIO` library are documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- Swept-solid import applies the profile, solid and object placements to inclined extrusions, revolutions and
+  both Boolean operands. IFC re-export preserves world placement and multiple swept body items when a single
+  parametric solid cannot represent the result. Mesh export distinguishes open surfaces from closed shells.
+- IFC export rejects unsupported compound or incomplete Boolean bodies instead of silently dropping operations
+  or writing missing operand references.
+- IFC4 `IfcTriangulatedFaceSet` import reads nested coordinate and triangle lists, including `PnIndex`.
 - STEP import indexes entities by type once, reuses repeated type names, and reads typed arguments from lazy slices.
 - Faceted face import triangulates concave polygons and holes, keeps disjoint bounds as separate regions,
   and omits invalid contours rather than substituting zero coordinates.

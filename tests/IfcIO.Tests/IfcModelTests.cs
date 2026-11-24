@@ -268,7 +268,7 @@ public class IfcModelTests
         Assert.NotEmpty(step.Entities);
         Assert.Single(step.OfType("IFCPROJECT"));
         Assert.Single(step.OfType("IFCCOLUMN"));
-        Assert.Single(step.OfType("IFCFACETEDBREP"));
+        Assert.Single(step.OfType("IFCSHELLBASEDSURFACEMODEL"));
     }
 
     [Fact]
@@ -285,6 +285,7 @@ public class IfcModelTests
         Assert.Contains("FILE_SCHEMA(('IFC4'));", ifc);
         Assert.Contains("DesignTransferView", ifc);
         Assert.Contains("IFCTRIANGULATEDFACESET(", ifc);
+        Assert.Equal(".F.", Assert.Single(StepReader.Read(new StringReader(ifc)).OfType("IFCTRIANGULATEDFACESET")).GetRaw(2));
         Assert.Contains("IFCCARTESIANPOINTLIST3D(", ifc);
         Assert.Contains("'Tessellation'", ifc);
     }

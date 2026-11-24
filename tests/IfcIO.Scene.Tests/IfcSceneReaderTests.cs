@@ -428,10 +428,8 @@ public class IfcSceneReaderTests
     }
 
     [Fact]
-    public void Read_Ifc4TriangulatedFaceSet_IsReportedWithoutGeometry()
+    public void Read_Ifc4TriangulatedFaceSet_ConvertsGeometry()
     {
-        // Documented limit: IfcIO's reader returns no mesh for IfcTriangulatedFaceSet, even the one it writes itself.
-        // When this test fails, IfcIO reads it, and the limit in docs/scene-adapter.md goes.
         var model = IfcModel.Create("Tessellated", IfcSchema.Ifc4);
         model.AddMesh("Slab", Mm(Triangle), [0, 1, 2], ifcType: "IFCSLAB");
         using var writer = new StringWriter();
@@ -440,8 +438,8 @@ public class IfcSceneReaderTests
 
         var result = Valid(Read(OpenText(writer.ToString())));
 
-        Assert.Empty(result.Document.Geometries);
-        Assert.Equal("no-geometry", Assert.Single(result.Diagnostics).Code);
+        Assert.Equal([0, 1, 2], Assert.Single(result.Document.Geometries).Indices);
+        Assert.Empty(result.Diagnostics);
     }
 
     [IfcFileFact]
@@ -478,8 +476,6 @@ public class IfcSceneReaderTests
         return IfcModel.Open(reader);
     }
 
-    // Models are saved as IFC2x3 (faceted breps) unless a test needs IFC4: IfcIO does not read back the
-    // IfcTriangulatedFaceSet it writes for IFC4.
     private static IfcModel SaveAndOpen(IfcModel model)
     {
         using var writer = new StringWriter();

@@ -102,11 +102,9 @@ public sealed class StepWriter
     public static string RealExact(double v)
     {
         string text = v.ToString("G15", CultureInfo.InvariantCulture);
-        if (!text.Contains('.') && !text.Contains('E') && !text.Contains('e'))
-        {
-            text += ".";
-        }
-        return text;
+        if (text.Contains('.')) return text;
+        int exponent = text.IndexOf('E');
+        return exponent < 0 ? text + "." : text.Insert(exponent, ".");
     }
 
     /// <summary>

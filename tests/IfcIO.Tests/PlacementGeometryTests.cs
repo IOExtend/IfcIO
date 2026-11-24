@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using IfcIO.Core;
 using IfcIO.Exporters;
 using IfcIO.Geometry;
 using IfcIO.Model;
@@ -187,26 +188,264 @@ public class PlacementGeometryTests
         var pipe = Element(model, "Pipe");
         Assert.Equal("IFCFLOWSEGMENT", pipe.IfcType);
         Assert.NotNull(pipe.Mesh);
+        Assert.Null(pipe.Solid);
         var box = pipe.Mesh.BoundingBox;
         AssertPoints([new(1095, 2000, 2990), new(1105, 3000, 3010)], [box.Min, box.Max]);
+    }
 
-        // The parametric solid keeps the item's own definition, as before.
-        Assert.NotNull(pipe.Solid);
-        Assert.Equal(1000.0, pipe.Solid.Depth);
+    [Fact]
+    public void Open_ScaledDirectionRatios_PreservePlacement()
+    {
+        string ifc = BuildIfc(Millimetre)
+            .Replace("#33=IFCDIRECTION((0.,1.));", "#33=IFCDIRECTION((0.,1.E-200));", StringComparison.Ordinal)
+            .Replace("#31=IFCDIRECTION((0.,1.,0.));", "#31=IFCDIRECTION((0.,1.E200,0.));", StringComparison.Ordinal);
+        var mesh = Element(Open(ifc), "Pipe").Mesh!;
+        AssertPoints([new(1095, 2000, 2990), new(1105, 3000, 3010)], [mesh.BoundingBox.Min, mesh.BoundingBox.Max]);
+    }
+
+    [Theory]
+    [InlineData("4.", 30, 38)]
+    [InlineData("-4.", 22, 30)]
+    public void Open_InclinedExtrusion_KeepsProfileInPlacementPlane(string zDirection, double minZ, double maxZ)
+    {
+        string ifc = BuildIfc(Millimetre)
+            .Replace("#201=IFCLOCALPLACEMENT(#61,#202);", "#201=IFCLOCALPLACEMENT($,#202);", StringComparison.Ordinal)
+            .Replace("#206=IFCEXTRUDEDAREASOLID(#207,#209,#30,1000.);",
+                $"#206=IFCEXTRUDEDAREASOLID(#207,#209,#211,10.); #211=IFCDIRECTION((0.,3.,{zDirection}));", StringComparison.Ordinal)
+            .Replace("#209=IFCAXIS2PLACEMENT3D(#204,#32,#31);",
+                "#209=IFCAXIS2PLACEMENT3D(#212,$,$); #212=IFCCARTESIANPOINT((10.,20.,30.));", StringComparison.Ordinal)
+            .Replace("#208=IFCAXIS2PLACEMENT2D(#210,#33);", "#208=IFCAXIS2PLACEMENT2D(#210,$);", StringComparison.Ordinal);
+
+        var mesh = Element(Open(ifc), "Pipe").Mesh!;
+        AssertPoints([new(0, 15, minZ), new(20, 31, maxZ)], [mesh.BoundingBox.Min, mesh.BoundingBox.Max]);
+        Assert.All(mesh.Vertices.Take(4), point => Assert.Equal(30, point.Z, 9));
+        var cap = mesh.Indices.Skip(24).Take(3).Select(i => mesh.Vertices[i]).ToArray();
+        Assert.True(IfcVector3.Dot(IfcVector3.Cross(cap[1] - cap[0], cap[2] - cap[0]),
+            mesh.Vertices[4] - mesh.Vertices[0]) < 0);
+    }
+
+    [Theory]
+    [InlineData(false, false, 13, 24, 11, 24, 28)]
+    [InlineData(true, false, 6, 23, 6, 21, 28)]
+    [InlineData(false, true, 16, 25, 11, 25, 25)]
+    [InlineData(true, true, 5, 26, 5, 21, 25)]
+    public void Open_Revolution_AppliesProfileAndSolidPlacementsBeforeObjectPlacement(
+        bool rotateSolid, bool rotateProfile, double startX, double startY, double endX, double endY, double endZ)
+    {
+        string ifc = BuildIfc(Millimetre)
+            .Replace("#206=IFCEXTRUDEDAREASOLID(#207,#209,#30,1000.);",
+                "#206=IFCREVOLVEDAREASOLID(#207,#214,#211,1.5707963267948966); #211=IFCAXIS1PLACEMENT(#213,#31);", StringComparison.Ordinal)
+            .Replace("#207=IFCRECTANGLEPROFILEDEF(.AREA.,$,#208,20.,10.);", "#207=IFCRECTANGLEPROFILEDEF(.AREA.,$,#208,2.,4.);", StringComparison.Ordinal)
+            .Replace("#208=IFCAXIS2PLACEMENT2D(#210,#33);",
+                $"#208=IFCAXIS2PLACEMENT2D(#212,{(rotateProfile ? "#33" : "$")}); #212=IFCCARTESIANPOINT((4.,6.));", StringComparison.Ordinal)
+            .Replace("#209=IFCAXIS2PLACEMENT3D(#204,#32,#31);",
+                $"#209=IFCAXIS2PLACEMENT3D(#204,#32,#31); #213=IFCCARTESIANPOINT((1.,0.,0.)); #214=IFCAXIS2PLACEMENT3D(#215,$,{(rotateSolid ? "#31" : "$")}); #215=IFCCARTESIANPOINT((10.,20.,30.));",
+                StringComparison.Ordinal);
+
+        // The last ring is 90 degrees about the solid-local Y axis through (1,0,0).
+        // The element's parent chain then takes (x,y,z) to (1100-y,2000+x,3000+z).
+        var mesh = Element(Open(ifc), "Pipe").Mesh!;
+        AssertPoints([new(1100 - startY, 2000 + startX, 3030), new(1100 - endY, 2000 + endX, 3000 + endZ)],
+            [mesh.Vertices[0], mesh.Vertices[96]]);
+        var cap = mesh.Indices.Skip(24 * 4 * 6).Take(3).Select(i => mesh.Vertices[i]).ToArray();
+        Assert.True(IfcVector3.Cross(cap[1] - cap[0], cap[2] - cap[0]).Z > 0);
+    }
+
+    [Theory]
+    [InlineData(IfcSchema.Ifc2x3)]
+    [InlineData(IfcSchema.Ifc4)]
+    public void SaveAndOpen_PlacedExtrusion_PreservesWorldGeometry(IfcSchema schema)
+    {
+        string ifc = BuildIfc(Millimetre);
+        if (schema == IfcSchema.Ifc4)
+            ifc = ifc.Replace("FILE_SCHEMA(('IFC2X3'));", "FILE_SCHEMA(('IFC4'));", StringComparison.Ordinal);
+        var model = Open(ifc);
+
+        var mesh = Element(Open(model.ToStepString()), "Pipe").Mesh!;
+        Assert.Equal(12, mesh.Indices.Count / 3);
+        AssertPoints([new(1095, 2000, 2990), new(1105, 3000, 3010)], [mesh.BoundingBox.Min, mesh.BoundingBox.Max]);
+    }
+
+    [Fact]
+    public void SaveAndOpen_MultipleSweptItems_PreservesBothMeshes()
+    {
+        string ifc = BuildIfc(Millimetre)
+            .Replace("#201=IFCLOCALPLACEMENT(#61,#202);", "#201=IFCLOCALPLACEMENT($,#202);", StringComparison.Ordinal)
+            .Replace("'SweptSolid',(#206));", "'SweptSolid',(#206,#211));", StringComparison.Ordinal)
+            .Replace("#206=IFCEXTRUDEDAREASOLID(#207,#209,#30,1000.);",
+                """
+                #206=IFCEXTRUDEDAREASOLID(#207,#202,#30,1000.);
+                #211=IFCEXTRUDEDAREASOLID(#207,#212,#30,1000.);
+                #212=IFCAXIS2PLACEMENT3D(#213,$,$);
+                #213=IFCCARTESIANPOINT((100.,0.,0.));
+                """, StringComparison.Ordinal)
+            .Replace("#208=IFCAXIS2PLACEMENT2D(#210,#33);", "#208=IFCAXIS2PLACEMENT2D(#210,$);", StringComparison.Ordinal);
+        var model = Open(ifc);
+
+        string saved = model.ToStepString();
+        var step = StepReader.Read(new StringReader(saved));
+        var rep = Assert.Single(step.OfType("IFCSHAPEREPRESENTATION"),
+            e => e.GetString(2) == "Brep" && e.GetRefList(3).Count == 2);
+        Assert.All(rep.GetRefList(3), id =>
+        {
+            var brep = step.Find(id)!;
+            Assert.Equal("IFCFACETEDBREP", brep.Type);
+            Assert.Equal(12, step.Find(brep.GetRef(0))!.GetRefList(0).Count);
+        });
+        var mesh = Element(Open(saved), "Pipe").Mesh!;
+        Assert.Equal(24, mesh.TriangleCount);
+        AssertPoints([new(-10, -5, 0), new(110, 5, 1000)], [mesh.BoundingBox.Min, mesh.BoundingBox.Max]);
+    }
+
+    [Fact]
+    public void SaveAndOpen_TranslatedExtrusion_KeepsWorldSpaceParametricSolid()
+    {
+        string ifc = BuildIfc(Millimetre)
+            .Replace("#201=IFCLOCALPLACEMENT(#61,#202);", "#201=IFCLOCALPLACEMENT(#41,#202);", StringComparison.Ordinal)
+            .Replace("IFCEXTRUDEDAREASOLID(#207,#209,#30,1000.)", "IFCEXTRUDEDAREASOLID(#207,#202,#30,1000.)", StringComparison.Ordinal)
+            .Replace("#208=IFCAXIS2PLACEMENT2D(#210,#33);", "#208=IFCAXIS2PLACEMENT2D(#210,$);", StringComparison.Ordinal);
+        var model = Open(ifc);
+
+        var pipe = Element(model, "Pipe");
+        Assert.Equal(new IfcVector3(1000, 2000, 0), pipe.Solid!.Position);
+        AssertPoints(pipe.Mesh!.Vertices.ToArray(), Element(Open(model.ToStepString()), "Pipe").Mesh!.Vertices);
+    }
+
+    [Fact]
+    public void SaveAndOpen_TranslatedClipping_KeepsSweptOperandAndPlane()
+    {
+        string ifc = BuildIfc(Millimetre)
+            .Replace("#321=IFCLOCALPLACEMENT($,#322);", "#321=IFCLOCALPLACEMENT(#41,#322);", StringComparison.Ordinal)
+            .Replace("#607=IFCEXTRUDEDAREASOLID(#608,#209,#30,1000.);",
+                "#607=IFCEXTRUDEDAREASOLID(#608,#202,#30,1000.);", StringComparison.Ordinal);
+
+        var model = Open(ifc);
+        var csg = Element(model, "Beam").BooleanResult!;
+        Assert.Equal(new(1000, 2000, 0), csg.FirstSolid!.Position);
+        Assert.Equal(new(1000, 2000, 5000), csg.SecondHalfSpace!.BaseSurface.Location);
+
+        var reopened = Element(Open(model.ToStepString()), "Beam").BooleanResult!;
+        Assert.True(reopened.IsClippingResult);
+        Assert.Equal(csg.FirstSolid.Position, reopened.FirstSolid!.Position);
+        Assert.Equal(csg.SecondHalfSpace.BaseSurface.Location, reopened.SecondHalfSpace!.BaseSurface.Location);
+    }
+
+    [Fact]
+    public void Save_MultipleBooleanItems_RejectsLosingOperands()
+    {
+        string ifc = BuildIfc(Millimetre)
+            .Replace("'Clipping',(#606));", "'CSG',(#606,#614));", StringComparison.Ordinal)
+            .Replace("#606=IFCBOOLEANCLIPPINGRESULT(.DIFFERENCE.,#607,#610);",
+                "#606=IFCBOOLEANRESULT(.DIFFERENCE.,#607,#206); #614=IFCBOOLEANRESULT(.UNION.,#206,#607);", StringComparison.Ordinal);
+        var model = Open(ifc);
+        Assert.True(Element(model, "Beam").Mesh!.TriangleCount > 0);
+        var error = Assert.Throws<InvalidDataException>(() => model.ToStepString());
+        Assert.Contains("losing operands", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Save_NestedUnsupportedBoolean_RejectsMissingOperandInsteadOfWritingRefZero()
+    {
+        string ifc = BuildIfc(Millimetre)
+            .Replace("'Clipping',(#606));", "'Clipping',(#614));", StringComparison.Ordinal)
+            .Replace("#606=IFCBOOLEANCLIPPINGRESULT(.DIFFERENCE.,#607,#610);",
+                "#606=IFCBOOLEANCLIPPINGRESULT(.DIFFERENCE.,#607,#610); #614=IFCBOOLEANCLIPPINGRESULT(.DIFFERENCE.,#606,#610);",
+                StringComparison.Ordinal);
+
+        var error = Assert.Throws<InvalidDataException>(() => Open(ifc).ToStepString());
+        Assert.Contains("without both operands", error.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(".UNION.")]
+    [InlineData(".DIFFERENCE.")]
+    public void Open_BooleanWithRotatedSecondExtrusion_PlacesOperand(string operation)
+    {
+        string ifc = BuildIfc(Millimetre).Replace("#606=IFCBOOLEANCLIPPINGRESULT(.DIFFERENCE.,#607,#610);",
+            $"#606=IFCBOOLEANRESULT({operation},#607,#206);", StringComparison.Ordinal);
+        var model = Open(ifc);
+        var boolean = Element(model, "Beam").BooleanResult!;
+
+        Assert.Null(boolean.SecondSolid);
+        Assert.NotNull(boolean.SecondMesh);
+        AssertPoints([new(0, -5, -10), new(1000, 5, 10)], [boolean.SecondMesh.BoundingBox.Min, boolean.SecondMesh.BoundingBox.Max]);
+
+        string saved = model.ToStepString();
+        var reopened = Element(Open(saved), "Beam").BooleanResult!;
+        Assert.NotNull(reopened.SecondMesh);
+        AssertPoints([new(0, -5, -10), new(1000, 5, 10)], [reopened.SecondMesh.BoundingBox.Min, reopened.SecondMesh.BoundingBox.Max]);
+        Assert.Contains($"=IFCBOOLEANRESULT({operation},", saved, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(1, 2, 3)]
+    [InlineData(1, 0, 0)]
+    [InlineData(1, 1e-8, 0)]
+    public void SaveAndOpen_AuthoredExtrusion_WritesItsProfileFrame(double x, double y, double z)
+    {
+        var model = IfcModel.Create("Authored extrusion");
+        var element = model.AddExtrudedRectangle("Extrusion", 20, 10, 30, new(10, 20, 30), new(x, y, z));
+        string ifc = model.ToStepString();
+        var step = StepReader.Read(new StringReader(ifc));
+        var extrusion = Assert.Single(step.OfType("IFCEXTRUDEDAREASOLID"));
+        var placement = step.Find(extrusion.GetRef(1))!;
+        Assert.NotNull(placement.GetRef(1));
+        if (y == 1e-8)
+            Assert.Equal("(1.,1.E-08,0.)", step.Find(placement.GetRef(1))!.GetRaw(0));
+        Assert.Equal("(0.,0.,1.)", step.Find(extrusion.GetRef(2))!.GetRaw(0));
+        var reopened = Element(Open(ifc), "Extrusion");
+
+        Assert.NotNull(reopened.Solid);
+        AssertPoints(element.GetEffectiveMesh()!.Vertices.ToArray(), reopened.Mesh!.Vertices, 1e-9);
     }
 
     [Fact]
     public void Open_ClippingResult_AppliesRotatedOperandPosition()
     {
-        var model = Open(BuildIfc(Millimetre));
+        string ifc = BuildIfc(Millimetre).Replace("#600=IFCBEAM('CYvctVUKr0kugbFTf53O9L',$,'Beam',$,$,#321",
+            "#600=IFCBEAM('CYvctVUKr0kugbFTf53O9L',$,'Beam',$,$,#201", StringComparison.Ordinal)
+            .Replace("#613=IFCCARTESIANPOINT((0.,0.,5000.));", "#613=IFCCARTESIANPOINT((500.,0.,0.));", StringComparison.Ordinal)
+            .Replace("#612=IFCAXIS2PLACEMENT3D(#613,$,$);", "#612=IFCAXIS2PLACEMENT3D(#613,#32,$);", StringComparison.Ordinal);
+        var model = Open(ifc);
 
         var beam = Element(model, "Beam");
         Assert.NotNull(beam.Mesh);
         var box = beam.Mesh.BoundingBox;
-        AssertPoints([new(0, -10, -5), new(1000, 10, 5)], [box.Min, box.Max]);
+        AssertPoints([new(1090, 2000, 2995), new(1110, 2500, 3005)], [box.Min, box.Max]);
         Assert.NotNull(beam.BooleanResult);
         Assert.NotNull(beam.BooleanResult.FirstMesh);
         Assert.Null(beam.BooleanResult.FirstSolid);
+
+        var plane = beam.BooleanResult.SecondHalfSpace!.BaseSurface;
+        AssertPoints([new(1100, 2500, 3000), IfcVector3.UnitY], [plane.Location, plane.Normal]);
+        string saved = model.ToStepString();
+        var step = StepReader.Read(new StringReader(saved));
+        var planePlacement = step.Find(Assert.Single(step.OfType("IFCPLANE")).GetRef(0))!;
+        Assert.NotNull(planePlacement.GetRef(1));
+        Assert.NotNull(planePlacement.GetRef(2));
+        var reopened = Element(Open(saved), "Beam");
+        var reopenedBox = reopened.Mesh!.BoundingBox;
+        AssertPoints([box.Min, box.Max], [reopenedBox.Min, reopenedBox.Max]);
+    }
+
+    [Theory]
+    [InlineData("$", "(3,1,2)", 2, 0, 1)]
+    [InlineData("((0.,0.,1.))", "((1,1,1))", 0, 1, 2)]
+    public void Open_TriangulatedFaceSet_ResolvesOneBasedPointNumbersAndSkipsInvalidFaces(
+        string normals, string indexAttribute, int first, int second, int third)
+    {
+        string ifc = BuildIfc(Millimetre)
+            .Replace("FILE_SCHEMA(('IFC2X3'));", "FILE_SCHEMA(('IFC4'));", StringComparison.Ordinal)
+            .Replace("'SurfaceModel',(#106)", "'Tessellation',(#106)", StringComparison.Ordinal)
+            .Replace("#106=IFCFACEBASEDSURFACEMODEL((#107));",
+                $"""
+                #106=IFCTRIANGULATEDFACESET(#114,{normals},.F.,((1,2,3), (1,0,2), (3,2,5)),{indexAttribute});
+                #114=IFCCARTESIANPOINTLIST3D(((0.,0.,0.),(1.,0.,0.),(0.,1.,0.),(1000000.,0.,0.)));
+                """, StringComparison.Ordinal);
+
+        var mesh = Element(Open(ifc), "Panel").Mesh!;
+        AssertPoints(PanelWorld, mesh.Vertices);
+        Assert.Equal([first, second, third], mesh.Indices);
     }
 
     [Fact]

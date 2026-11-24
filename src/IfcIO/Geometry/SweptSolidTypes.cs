@@ -123,35 +123,31 @@ public sealed class IfcExtrudedAreaSolid
         Direction = direction ?? IfcVector3.UnitZ;
     }
 
+    // The authoring API defines the profile in a plane perpendicular to Direction.
+    internal IfcTransform GetProfileFrame()
+    {
+        var z = Direction.Normalized();
+        if (z.Length < 1e-6) z = IfcVector3.UnitZ;
+
+        var x = Math.Abs(z.Z) > 0.999
+            ? IfcVector3.Cross(IfcVector3.Cross(z, IfcVector3.UnitX).Normalized(), z).Normalized()
+            : IfcVector3.Cross(IfcVector3.UnitZ, z).Normalized();
+        return new IfcTransform(x, IfcVector3.Cross(z, x).Normalized(), z, Position);
+    }
+
     /// <summary>
     /// Converts the extruded swept solid into a triangulated 3D polygon mesh.
     /// </summary>
     public IfcMesh ToMesh(int segments = 16, string meshName = "ExtrudedSolid")
     {
-        var boundary2D = Profile.GetBoundaryPoints(segments);
+        var boundary2D = GetCounterClockwiseBoundary(Profile.GetBoundaryPoints(segments));
         int n = boundary2D.Count;
         if (n < 3)
         {
             return IfcMesh.Create(0, meshName, Array.Empty<IfcVector3>(), Array.Empty<int>());
         }
 
-        // Construct orthonormal coordinate frame
-        var dirNorm = Direction.Normalized();
-        if (dirNorm.Length < 1e-6) dirNorm = IfcVector3.UnitZ;
-
-        IfcVector3 xAxis, yAxis;
-        if (Math.Abs(dirNorm.Z) > 0.999)
-        {
-            xAxis = IfcVector3.UnitX;
-            yAxis = IfcVector3.Cross(dirNorm, xAxis).Normalized();
-            xAxis = IfcVector3.Cross(yAxis, dirNorm).Normalized();
-        }
-        else
-        {
-            xAxis = IfcVector3.Cross(IfcVector3.UnitZ, dirNorm).Normalized();
-            yAxis = IfcVector3.Cross(dirNorm, xAxis).Normalized();
-        }
-
+        var frame = GetProfileFrame();
         var vertices = new List<IfcVector3>(n * 2);
         var indices = new List<int>(n * 6 + (n - 2) * 6);
 
@@ -159,11 +155,11 @@ public sealed class IfcExtrudedAreaSolid
         for (int i = 0; i < n; i++)
         {
             var p2 = boundary2D[i];
-            var basePt = Position + (p2.X * xAxis) + (p2.Y * yAxis);
+            var basePt = frame.Origin + (p2.X * frame.X) + (p2.Y * frame.Y);
             vertices.Add(basePt);
         }
 
-        var extrudeOffset = dirNorm * Depth;
+        var extrudeOffset = frame.Z * Depth;
         for (int i = 0; i < n; i++)
         {
             vertices.Add(vertices[i] + extrudeOffset);
@@ -211,6 +207,22 @@ public sealed class IfcExtrudedAreaSolid
     }
 
     internal readonly record struct Vector2D(double X, double Y);
+
+    internal static IReadOnlyList<IfcVector3> GetCounterClockwiseBoundary(IReadOnlyList<IfcVector3> points)
+    {
+        int count = points.Count;
+        while (count > 1 && points[0] == points[count - 1]) count--;
+        if (count < 3) return points.Take(count).ToArray();
+
+        double area = 0;
+        var origin = points[0];
+        for (int i = 1; i < count - 1; i++)
+            area += IfcVector3.Cross(points[i] - origin, points[i + 1] - origin).Z;
+
+        if (area < 0)
+            return [points[0], ..points.Skip(1).Take(count - 1).Reverse()];
+        return count == points.Count ? points : points.Take(count).ToArray();
+    }
 
     internal static List<int> TriangulatePolygon(IReadOnlyList<Vector2D> poly)
     {
@@ -378,7 +390,7 @@ public sealed class IfcRevolvedAreaSolid
     /// </summary>
     public IfcMesh ToMesh(int profileSegments = 16, int radialSegments = 24, string meshName = "RevolvedSolid")
     {
-        var boundary2D = Profile.GetBoundaryPoints(profileSegments);
+        var boundary2D = IfcExtrudedAreaSolid.GetCounterClockwiseBoundary(Profile.GetBoundaryPoints(profileSegments));
         int n = boundary2D.Count;
         if (n < 3)
         {
@@ -400,6 +412,14 @@ public sealed class IfcRevolvedAreaSolid
         {
             var p = boundary2D[i];
             basePoints.Add(Position + new IfcVector3(p.X, p.Y, 0));
+        }
+
+        // The sweep can start on either side of the XY profile plane. Match the winding to its motion.
+        double normalVelocity = 0;
+        foreach (var point in basePoints)
+        {
+            double velocity = IfcVector3.Cross(axisDir, point - axisLoc).Z;
+            if (Math.Abs(velocity) > Math.Abs(normalVelocity)) normalVelocity = velocity;
         }
 
         var vertices = new List<IfcVector3>(ringCount * n);
@@ -472,6 +492,11 @@ public sealed class IfcRevolvedAreaSolid
             }
         }
 
+        if (normalVelocity * Angle < 0)
+        {
+            for (int i = 0; i < indices.Count; i += 3)
+                (indices[i + 1], indices[i + 2]) = (indices[i + 2], indices[i + 1]);
+        }
         return IfcMesh.Create(0, meshName, vertices, indices);
     }
 }

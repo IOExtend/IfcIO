@@ -48,7 +48,7 @@ public class RevolvedSolidTests
     {
         var model = IfcModel.Create("Revolved Roundtrip");
         var profile = new IfcCircleProfileDef(radius: 150, position: new IfcVector3(600, 0, 0));
-        var axis = new IfcAxis1Placement(IfcVector3.Zero, IfcVector3.UnitZ);
+        var axis = new IfcAxis1Placement(IfcVector3.Zero, IfcVector3.UnitY);
         var elem = model.AddRevolvedSolid("Circular Torus", profile, angle: Math.PI, axis: axis, ifcType: "IFCPIPEFITTING");
 
         string tempPath = Path.Combine(Path.GetTempPath(), $"rev_test_{Guid.NewGuid():N}.ifc");
@@ -134,6 +134,45 @@ public class RevolvedSolidTests
     }
 
     [Fact]
+    public void SaveAndOpen_TranslatedAuthoredRevolution_WritesAxisRelativeToPosition()
+    {
+        var model = IfcModel.Create("Revolution axis", IfcSchema.Ifc4);
+        var absoluteAxis = new IfcVector3(11, 20, 30);
+        var element = model.AddRevolvedSolid("Bend", new IfcRectangleProfileDef(2, 4, new(4, 6, 0)),
+            Math.PI / 2, new(10, 20, 30), new(absoluteAxis, IfcVector3.UnitY));
+
+        string ifc = model.ToStepString();
+        var step = StepReader.Read(new StringReader(ifc));
+        var revolution = Assert.Single(step.OfType("IFCREVOLVEDAREASOLID"));
+        var axis = step.Find(revolution.GetRef(2))!;
+        Assert.Equal("(1.,0.,0.)", step.Find(axis.GetRef(0))!.GetRaw(0));
+
+        var reopened = Assert.Single(IfcModel.Open(new StringReader(ifc)).AllElements);
+        Assert.Equal(absoluteAxis, reopened.RevolvedSolid!.Axis.Location);
+        var mesh = element.GetEffectiveMesh()!;
+        Assert.Equal(mesh.TriangleCount, reopened.Mesh!.TriangleCount);
+        Assert.All(mesh.Vertices.Zip(reopened.Mesh.Vertices), pair =>
+            Assert.True((pair.First - pair.Second).Length < 1e-5));
+    }
+
+    [Fact]
+    public void SaveAndOpen_AuthoredRevolutionWithOffPlaneAxis_PreservesMeshWithoutInvalidSweep()
+    {
+        var model = IfcModel.Create("Off-plane revolution", IfcSchema.Ifc4);
+        var element = model.AddRevolvedSolid("Bend", new IfcRectangleProfileDef(2, 4, new(4, 6, 0)),
+            Math.PI / 2, new(10, 20, 30), new(new(11, 20, 0), IfcVector3.UnitY));
+        string ifc = model.ToStepString();
+        var step = StepReader.Read(new StringReader(ifc));
+        Assert.Empty(step.OfType("IFCREVOLVEDAREASOLID"));
+        Assert.Single(step.OfType("IFCTRIANGULATEDFACESET"));
+        var before = element.GetEffectiveMesh()!;
+        var after = Assert.Single(IfcModel.Open(new StringReader(ifc)).AllElements).Mesh!;
+        Assert.Equal(before.TriangleCount, after.TriangleCount);
+        Assert.Equal(before.Vertices.Count, after.Vertices.Count);
+        Assert.All(before.Vertices.Zip(after.Vertices), pair => Assert.True((pair.First - pair.Second).Length < 1e-5));
+    }
+
+    [Fact]
     public void LegacyMislabeledAngle_RequiresExplicitOptInAndSavesWithCorrectUnits()
     {
         const string legacy = """
@@ -177,7 +216,8 @@ public class RevolvedSolidTests
     {
         var model = IfcModel.Create("Small angle", IfcSchema.Ifc4);
         model.AngleUnit = IfcPlaneAngleUnit.Radian;
-        model.AddRevolvedSolid("Short sweep", new IfcCircleProfileDef(2), angle: 1e-8);
+        model.AddRevolvedSolid("Short sweep", new IfcCircleProfileDef(2, new(5, 0, 0)), angle: 1e-8,
+            axis: new(IfcVector3.Zero, IfcVector3.UnitY));
 
         var step = StepReader.Read(new StringReader(model.ToStepString()));
 

@@ -193,6 +193,7 @@ public static class IfcPatch
             Schema = source.Schema,
             SourceSchemaIdentifier = source.SourceSchemaIdentifier,
             UnsupportedPlacementCount = source.UnsupportedPlacementCount,
+            BooleanImportWarnings = source.BooleanImportWarnings,
         };
         target.Storeys.Clear();
 
@@ -254,6 +255,7 @@ public static class IfcPatch
             LengthUnit = baseModel.LengthUnit,
             AngleUnit = baseModel.AngleUnit,
             Schema = modelList.Any(m => m.Schema == Schema.IfcSchema.Ifc4) ? Schema.IfcSchema.Ifc4 : Schema.IfcSchema.Ifc2x3,
+            BooleanImportWarnings = modelList.SelectMany(m => m.BooleanImportWarnings).ToArray(),
         };
         merged.Storeys.Clear();
 

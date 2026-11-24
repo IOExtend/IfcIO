@@ -181,7 +181,7 @@ Examples:
 
         var sw = Stopwatch.StartNew();
         var model = IfcModel.Open(inputPath);
-        WarnOnPartialIfc4x3Import(model);
+        WarnOnPartialImport(model);
         sw.Stop();
 
         int elementCount = 0;
@@ -322,7 +322,7 @@ Examples:
             Console.Error.WriteLine("Error: IFC4X3 is supported for subset import only. Rewriting it as IFC is not supported.");
             return 1;
         }
-        WarnOnPartialIfc4x3Import(model);
+        WarnOnPartialImport(model);
         if (schemaOpt is { } requested) model.Schema = requested;
 
         if (glbPath is not null)
@@ -658,8 +658,10 @@ Examples:
         };
     }
 
-    private static void WarnOnPartialIfc4x3Import(IfcModel model)
+    private static void WarnOnPartialImport(IfcModel model)
     {
+        foreach (string warning in model.BooleanImportWarnings)
+            Console.Error.WriteLine($"Warning: {warning}");
         if (model.Schema != IfcSchema.Ifc4x3) return;
         Console.Error.WriteLine($"Warning: {model.SourceSchemaIdentifier} is read as a subset. Uninterpreted content is omitted.");
         if (model.UnsupportedPlacementCount > 0)
@@ -762,6 +764,7 @@ Examples:
         {
             LegacyIfcIoRevolvedAnglesInRadians = args.Contains("--legacy-ifcio-radian-sweeps", StringComparer.OrdinalIgnoreCase),
         });
+        WarnOnPartialImport(model);
 
         if (!string.IsNullOrEmpty(extractQuery))
         {
@@ -1043,10 +1046,12 @@ Examples:
         };
 
         var modelA = IfcModel.Open(fileA);
+        WarnOnPartialImport(modelA);
         Clash.IfcClashReport report;
         if (fileB is not null)
         {
             var modelB = IfcModel.Open(fileB);
+            WarnOnPartialImport(modelB);
             report = modelA.DetectClashes(modelB, options);
         }
         else
@@ -1159,6 +1164,8 @@ Examples:
 
         var baselineModel = IfcModel.Open(baselineFile);
         var revisionModel = IfcModel.Open(revisionFile);
+        WarnOnPartialImport(baselineModel);
+        WarnOnPartialImport(revisionModel);
         var report = baselineModel.Compare(revisionModel, options);
 
         Console.ForegroundColor = report.TotalChangesCount > 0 ? ConsoleColor.Cyan : ConsoleColor.Green;
@@ -1206,7 +1213,7 @@ Examples:
 
         var sw = Stopwatch.StartNew();
         var model = IfcModel.Open(inputPath);
-        WarnOnPartialIfc4x3Import(model);
+        WarnOnPartialImport(model);
 
         if (gridsPath is not null)
         {

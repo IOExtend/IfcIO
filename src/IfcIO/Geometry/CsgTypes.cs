@@ -82,17 +82,22 @@ public sealed class IfcBooleanResult
     public IfcMesh? FirstMesh { get; set; }
     public IfcExtrudedAreaSolid? FirstSolid { get; set; }
     public IfcRevolvedAreaSolid? FirstRevolved { get; set; }
+    internal IfcBooleanResult? FirstBoolean { get; set; }
 
     /// <summary>Second operand (clipping half-space, cutting solid, or joining solid).</summary>
     public IfcHalfSpaceSolid? SecondHalfSpace { get; set; }
     public IfcExtrudedAreaSolid? SecondSolid { get; set; }
+    /// <summary>Parametric form of a revolved second operand, when representable.</summary>
+    public IfcRevolvedAreaSolid? SecondRevolved { get; set; }
     public IfcMesh? SecondMesh { get; set; }
+    internal IfcBooleanResult? SecondBoolean { get; set; }
 
     /// <summary>
     /// True if this represents an IFCBOOLEANCLIPPINGRESULT (difference with a half-space solid).
     /// </summary>
     public bool IsClippingResult => Operator == IfcBooleanOperator.Difference
-        && SecondHalfSpace is not null && (FirstSolid is not null || FirstRevolved is not null);
+        && SecondHalfSpace is not null && (FirstSolid is not null || FirstRevolved is not null
+            || FirstBoolean?.IsClippingResult == true);
 
     public IfcBooleanResult() { }
 
@@ -119,27 +124,31 @@ public sealed class IfcBooleanResult
     /// <summary>
     /// Computes the resulting triangulated 3D mesh by applying the CSG clipping operation.
     /// </summary>
-    public IfcMesh ToMesh(string meshName = "BooleanResult")
+    public IfcMesh ToMesh(string meshName = "BooleanResult") => ToMesh(meshName, null);
+
+    internal IfcMesh ToMesh(string meshName, Action<int>? chargeVertices)
     {
-        var baseMesh = FirstMesh ?? FirstSolid?.ToMesh() ?? FirstRevolved?.ToMesh();
+        var baseMesh = FirstMesh ?? FirstSolid?.ToMesh() ?? FirstRevolved?.ToMesh() ?? FirstBoolean?.ToMesh(meshName, chargeVertices);
         if (baseMesh is null)
         {
             return IfcMesh.Create(0, meshName, Array.Empty<IfcVector3>(), Array.Empty<int>());
         }
 
-        if (SecondHalfSpace is null)
+        if (SecondHalfSpace is null || Operator == IfcBooleanOperator.Union)
         {
             return baseMesh;
         }
 
-        return ClipMeshByHalfSpace(baseMesh, SecondHalfSpace, meshName);
+        return ClipMeshByHalfSpace(baseMesh, SecondHalfSpace, Operator == IfcBooleanOperator.Intersection, meshName, chargeVertices);
     }
 
-    private static IfcMesh ClipMeshByHalfSpace(IfcMesh input, IfcHalfSpaceSolid halfSpace, string meshName)
+    private static IfcMesh ClipMeshByHalfSpace(
+        IfcMesh input, IfcHalfSpaceSolid halfSpace, bool keepHalfSpace, string meshName, Action<int>? chargeVertices)
     {
         var plane = halfSpace.BaseSurface;
         var normal = plane.Normal.Normalized();
-        if (!halfSpace.AgreementFlag) normal = -normal;
+        // IFC AgreementFlag=true places the material opposite the normal.
+        if (halfSpace.AgreementFlag == keepHalfSpace) normal = -normal;
 
         // Plane equation: N . X + d = 0
         double planeD = -IfcVector3.Dot(normal, plane.Location);
@@ -174,7 +183,7 @@ public sealed class IfcBooleanResult
             if (insideCount == 3)
             {
                 // Entire triangle inside
-                AddTriangle(outVertices, outIndices, p0, p1, p2);
+                EmitTriangle(p0, p1, p2);
             }
             else if (insideCount == 0)
             {
@@ -209,7 +218,7 @@ public sealed class IfcBooleanResult
                 var i1 = IntersectSegment(vIn, vOut1, dIn, dOut1);
                 var i2 = IntersectSegment(vIn, vOut2, dIn, dOut2);
 
-                AddTriangle(outVertices, outIndices, vIn, i1, i2);
+                EmitTriangle(vIn, i1, i2);
             }
             else // insideCount == 2
             {
@@ -239,12 +248,18 @@ public sealed class IfcBooleanResult
                 var i1 = IntersectSegment(vIn1, vOut, dIn1, dOut);
                 var i2 = IntersectSegment(vIn2, vOut, dIn2, dOut);
 
-                AddTriangle(outVertices, outIndices, vIn1, i1, i2);
-                AddTriangle(outVertices, outIndices, vIn1, i2, vIn2);
+                EmitTriangle(vIn1, i1, i2);
+                EmitTriangle(vIn1, i2, vIn2);
             }
         }
 
         return IfcMesh.Create(0, meshName, outVertices, outIndices);
+
+        void EmitTriangle(IfcVector3 a, IfcVector3 b, IfcVector3 c)
+        {
+            chargeVertices?.Invoke(3);
+            AddTriangle(outVertices, outIndices, a, b, c);
+        }
     }
 
     private static IfcVector3 IntersectSegment(in IfcVector3 a, in IfcVector3 b, double da, double db)

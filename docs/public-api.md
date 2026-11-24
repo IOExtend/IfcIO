@@ -53,6 +53,9 @@ Imported meshes use world coordinates. If a swept body cannot be represented by 
 solid, the reader keeps its placed mesh instead; IFC export writes that mesh rather than a partial or
 misplaced solid. Boolean operands also use placed meshes where necessary. Applying arbitrary solid-to-solid
 Boolean operations to the mesh is not supported; the mesher clips against half-spaces only.
+Nested plane clips trim the existing mesh faces in order; they do not add faces on the cut planes.
+`IfcModel.BooleanImportWarnings` lists skipped operands (including polygonal bounded half-spaces) and
+operations not evaluated in the mesh. These diagnostics refer to the source IFC, including after extraction.
 IFC export rejects compound Boolean bodies and Boolean results with missing operands rather than
 writing a mesh that drops the operations or an invalid STEP reference.
 

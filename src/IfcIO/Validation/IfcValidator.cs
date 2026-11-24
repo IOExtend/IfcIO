@@ -60,6 +60,16 @@ public static class IfcValidator
             });
         }
 
+        foreach (string warning in model.BooleanImportWarnings)
+        {
+            issues.Add(new IfcValidationIssue
+            {
+                RuleId = "IFC_BOOLEAN_IMPORT",
+                Severity = IfcIssueSeverity.Warning,
+                Message = warning,
+            });
+        }
+
         // 2. GlobalId uniqueness and format
         var seenGuids = new Dictionary<string, string>(StringComparer.Ordinal);
 
@@ -525,7 +535,7 @@ public static class IfcValidator
 
     private static void ValidateCsg(IfcBooleanResult csg, string entityName, List<IfcValidationIssue> issues)
     {
-        if (csg.FirstSolid is null && csg.FirstRevolved is null && csg.FirstMesh is null)
+        if (csg.FirstSolid is null && csg.FirstRevolved is null && csg.FirstMesh is null && csg.FirstBoolean is null)
         {
             issues.Add(new IfcValidationIssue
             {
@@ -539,8 +549,13 @@ public static class IfcValidator
         {
             ValidateSolid(csg.FirstSolid, entityName, issues);
         }
+        else if (csg.FirstBoolean is not null)
+        {
+            ValidateCsg(csg.FirstBoolean, entityName, issues);
+        }
 
-        if (csg.SecondHalfSpace is null && csg.SecondSolid is null && csg.SecondMesh is null)
+        if (csg.SecondHalfSpace is null && csg.SecondSolid is null && csg.SecondRevolved is null
+            && csg.SecondMesh is null && csg.SecondBoolean is null)
         {
             issues.Add(new IfcValidationIssue
             {
@@ -553,6 +568,14 @@ public static class IfcValidator
         else if (csg.SecondSolid is not null)
         {
             ValidateSolid(csg.SecondSolid, entityName, issues);
+        }
+        else if (csg.SecondRevolved is not null)
+        {
+            ValidateRevolvedSolid(csg.SecondRevolved, entityName, issues);
+        }
+        else if (csg.SecondBoolean is not null)
+        {
+            ValidateCsg(csg.SecondBoolean, entityName, issues);
         }
     }
 

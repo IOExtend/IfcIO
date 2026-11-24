@@ -5,6 +5,8 @@ All notable changes to the `IfcIO` library are documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- Import reads additional concrete IFC products with a `Body` representation, including curtain walls, piles,
+  ramps, furniture, distribution equipment, and IFC4.3 infrastructure elements.
 - Boolean import preserves nested operands and evaluates chains of plane clips. It reports skipped bounded
   half-spaces and Boolean operations not evaluated in the mesh, and rejects cyclic or excessive trees.
 - Swept-solid import applies the profile, solid and object placements to inclined extrusions, revolutions and

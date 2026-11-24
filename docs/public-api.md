@@ -21,6 +21,12 @@ Representations and ports with unsupported placements are omitted and counted in
 IFC output and schema migration are not supported for these models, including after extraction.
 Unknown, missing or multiple schema identifiers fail model import.
 
+Import includes concrete `IfcProduct` occurrences with a `Body` shape in the declared schema, including
+`IfcSite` terrain. Other spatial objects and ports still use their dedicated import paths; type definitions
+are not occurrences. Aggregated parts inherit their container's storey unless directly assigned elsewhere.
+The original element classes and hosts of imported openings can still be read without a body. Additional
+classes retain their IFC type in memory; IFC export can fall back to `IfcBuildingElementProxy`.
+
 `IfcModel.LengthUnit` controls the declared unit of geometry and storey elevations. IFC import keeps recognised
 millimetres, metres, feet and inches in the model; other supported length scales are converted to metres.
 `IfcModel.AngleUnit` controls the IFC plane angle unit, but `IfcRevolvedAreaSolid.Angle` is always in radians in memory.

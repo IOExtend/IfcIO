@@ -81,8 +81,8 @@ rebases them, for example on `ComputeBounds().Center`, before narrowing them to 
 
 - Mapped items (`IfcMappedItem`) are baked into each element's world mesh, so shared geometry is not shared in the
   scene.
-- IfcIO places an element in a storey only through `IfcRelContainedInSpatialStructure`. Elements contained in the site
-  or building, and spaces aggregated to a storey (`IfcRelAggregates`), are in the first storey. A file without storeys
+- IfcIO uses `IfcRelContainedInSpatialStructure` and passes known storey assignments to aggregated parts
+  (`IfcRelAggregates`). Products with no storey assignment are in the first storey. A file without storeys
   gets IfcIO's default storey `Level 1`, which has no GlobalId. Site, building and project are not tree nodes.
 - IfcIO excludes type objects (`IfcWallType`, `IfcDoorStyle`) and door and window lining and panel properties from
   the occurrence list. Type property sets are not read yet; when they are, they will use the same

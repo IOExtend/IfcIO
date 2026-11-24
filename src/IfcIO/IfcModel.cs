@@ -773,11 +773,7 @@ public sealed partial class IfcModel
             $"{StepWriter.Str(IfcGuid.NewGuid())},{StepWriter.Ref(ownerHistoryId)},$,$,{StepWriter.Ref(siteId)},({StepWriter.Ref(buildingId)})");
 
         // 4. Materials Cache
-        var styleCache = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        foreach (var mat in Materials)
-        {
-            GetOrCreateSurfaceStyle(w, mat, styleCache);
-        }
+        var styleCache = new Dictionary<SurfaceStyleKey, int>();
 
         // 5. Type Products
         var typeIdMap = new Dictionary<IfcTypeProduct, int>();
@@ -1243,10 +1239,31 @@ public sealed partial class IfcModel
 
         // 9. Material Layers & Profiles
         var materialEntityMap = new Dictionary<IfcMaterial, int>();
-        foreach (var mat in Materials)
+        int WriteMaterial(IfcMaterial material)
         {
-            int matId = w.Add("IFCMATERIAL", StepWriter.Str(mat.Name));
-            materialEntityMap[mat] = matId;
+            if (materialEntityMap.TryGetValue(material, out int existing)) return existing;
+            string attributes = StepWriter.Str(material.Name) + (Schema == IfcSchema.Ifc4 ? ",$,$" : "");
+            int id = w.Add("IFCMATERIAL", attributes);
+            materialEntityMap.Add(material, id);
+            if ((material.R, material.G, material.B, material.Alpha) != (0.8, 0.8, 0.8, 1.0))
+            {
+                int style = GetOrCreateSurfaceStyle(w, material, styleCache);
+                int item = w.Add("IFCSTYLEDITEM", $"$,({StepWriter.Ref(style)}),$");
+                int representation = w.Add("IFCSTYLEDREPRESENTATION",
+                    $"{StepWriter.Ref(mainContextId)},'Style','Material',({StepWriter.Ref(item)})");
+                w.Add("IFCMATERIALDEFINITIONREPRESENTATION", $"$,$,({StepWriter.Ref(representation)}),{StepWriter.Ref(id)}");
+            }
+            return id;
+        }
+
+        foreach (var material in Materials) WriteMaterial(material);
+        foreach (var (element, id) in elementEntityMap)
+        {
+            if (element.AssignedMaterial is not { } material || element.MaterialLayerSet is not null || element.MaterialProfileSet is not null)
+                continue;
+            int matId = WriteMaterial(material);
+            w.Add("IFCRELASSOCIATESMATERIAL",
+                $"{StepWriter.Str(IfcGuid.NewGuid())},{StepWriter.Ref(ownerHistoryId)},$,$,({StepWriter.Ref(id)}),{StepWriter.Ref(matId)}");
         }
 
         var layerSetMap = new Dictionary<IfcMaterialLayerSet, int>();
@@ -1255,11 +1272,7 @@ public sealed partial class IfcModel
             var layerIds = new List<int>();
             foreach (var layer in ls.Layers)
             {
-                if (!materialEntityMap.TryGetValue(layer.Material, out int matId))
-                {
-                    matId = w.Add("IFCMATERIAL", StepWriter.Str(layer.Material.Name));
-                    materialEntityMap[layer.Material] = matId;
-                }
+                int matId = WriteMaterial(layer.Material);
                 string isVent = layer.IsVentilated ? ".T." : ".F.";
                 int layId = w.Add("IFCMATERIALLAYER",
                     $"{StepWriter.Ref(matId)},{StepWriter.Real(layer.LayerThickness)},{isVent},{StepWriter.Str(layer.Name)},{StepWriter.Str(layer.Description)}");
@@ -1280,11 +1293,7 @@ public sealed partial class IfcModel
                     var layerIds = new List<int>();
                     foreach (var layer in usage.ForLayerSet.Layers)
                     {
-                        if (!materialEntityMap.TryGetValue(layer.Material, out int matId))
-                        {
-                            matId = w.Add("IFCMATERIAL", StepWriter.Str(layer.Material.Name));
-                            materialEntityMap[layer.Material] = matId;
-                        }
+                        int matId = WriteMaterial(layer.Material);
                         string isVent = layer.IsVentilated ? ".T." : ".F.";
                         int layId = w.Add("IFCMATERIALLAYER",
                             $"{StepWriter.Ref(matId)},{StepWriter.Real(layer.LayerThickness)},{isVent},{StepWriter.Str(layer.Name)},{StepWriter.Str(layer.Description)}");
@@ -1308,15 +1317,7 @@ public sealed partial class IfcModel
             var mpIds = new List<int>();
             foreach (var mp in ps.MaterialProfiles)
             {
-                int matId = 0;
-                if (mp.Material is not null)
-                {
-                    if (!materialEntityMap.TryGetValue(mp.Material, out matId))
-                    {
-                        matId = w.Add("IFCMATERIAL", StepWriter.Str(mp.Material.Name));
-                        materialEntityMap[mp.Material] = matId;
-                    }
-                }
+                int matId = mp.Material is null ? 0 : WriteMaterial(mp.Material);
                 int profDefId = WriteProfileDef(w, mp.Profile);
                 string matRef = matId > 0 ? StepWriter.Ref(matId) : "$";
                 int mpId = w.Add("IFCMATERIALPROFILE",
@@ -1338,15 +1339,7 @@ public sealed partial class IfcModel
                     var mpIds = new List<int>();
                     foreach (var mp in usage.ForProfileSet.MaterialProfiles)
                     {
-                        int matId = 0;
-                        if (mp.Material is not null)
-                        {
-                            if (!materialEntityMap.TryGetValue(mp.Material, out matId))
-                            {
-                                matId = w.Add("IFCMATERIAL", StepWriter.Str(mp.Material.Name));
-                                materialEntityMap[mp.Material] = matId;
-                            }
-                        }
+                        int matId = mp.Material is null ? 0 : WriteMaterial(mp.Material);
                         int profDefId = WriteProfileDef(w, mp.Profile);
                         string matRef = matId > 0 ? StepWriter.Ref(matId) : "$";
                         int mpId = w.Add("IFCMATERIALPROFILE",
@@ -1648,51 +1641,7 @@ public sealed partial class IfcModel
         }
 
         // 3. Parse Materials & Styles
-        var styleToMaterialMap = new Dictionary<int, IfcMaterial>();
-        foreach (var styleEnt in step.OfType("IFCSURFACESTYLE"))
-        {
-            string matName = styleEnt.GetString(0) ?? "Material";
-            var styles = styleEnt.GetRefList(2);
-            foreach (int shadingId in styles)
-            {
-                var shadingEnt = step.Find(shadingId);
-                if (shadingEnt is not null && shadingEnt.Type.Equals("IFCSURFACESTYLESHADING", StringComparison.OrdinalIgnoreCase))
-                {
-                    int? colId = shadingEnt.GetRef(0);
-                    var colEnt = step.Find(colId);
-                    if (colEnt is not null && colEnt.Type.Equals("IFCCOLOURRGB", StringComparison.OrdinalIgnoreCase))
-                    {
-                        double r = colEnt.GetReal(1) ?? 0.8;
-                        double g = colEnt.GetReal(2) ?? 0.8;
-                        double b = colEnt.GetReal(3) ?? 0.8;
-
-                        var mat = new IfcMaterial { Name = matName, R = r, G = g, B = b };
-                        styleToMaterialMap[styleEnt.Id] = mat;
-                        if (!model.Materials.Contains(mat)) model.Materials.Add(mat);
-                        break;
-                    }
-                }
-            }
-        }
-
-        // Map styled items to materials
-        var geomToMaterialMap = new Dictionary<int, IfcMaterial>();
-        foreach (var styledItem in step.OfType("IFCSTYLEDITEM"))
-        {
-            int? geomId = styledItem.GetRef(0);
-            var styles = styledItem.GetRefList(1);
-            if (geomId.HasValue)
-            {
-                foreach (int sId in styles)
-                {
-                    if (styleToMaterialMap.TryGetValue(sId, out var mat))
-                    {
-                        geomToMaterialMap[geomId.Value] = mat;
-                        break;
-                    }
-                }
-            }
-        }
+        var (geomToMaterialMap, materialAppearances) = ReadSurfaceStyles(step);
 
         // 4. Map Elements to Storeys
         var elementToStoreyMap = new Dictionary<int, IfcBuildingStorey>();
@@ -1928,7 +1877,7 @@ public sealed partial class IfcModel
                 }
                 if (mat is not null)
                 {
-                    element.Material = mat;
+                    element.SurfaceMaterial = mat;
                 }
             }
             else if (shapeDefId.HasValue)
@@ -2370,13 +2319,11 @@ public sealed partial class IfcModel
         foreach (var matEnt in step.OfType("IFCMATERIAL"))
         {
             string name = matEnt.GetString(0) ?? "Material";
-            var existing = model.Materials.FirstOrDefault(m => m.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
-            if (existing is null)
-            {
-                existing = new IfcMaterial { Name = name };
-                model.Materials.Add(existing);
-            }
-            materialMap[matEnt.Id] = existing;
+            var material = materialAppearances.TryGetValue(matEnt.Id, out var appearance)
+                ? new IfcMaterial { Name = name, R = appearance.R, G = appearance.G, B = appearance.B, Alpha = appearance.Alpha }
+                : new IfcMaterial { Name = name };
+            model.Materials.Add(material);
+            materialMap.Add(matEnt.Id, material);
         }
 
         var layerMap = new Dictionary<int, IfcMaterialLayer>();
@@ -2590,12 +2537,13 @@ public sealed partial class IfcModel
         return identifier[..brace].TrimEnd(' ');
     }
 
-    private int WriteElementShape(StepWriter w, IfcElement element, int bodySubContextId, Dictionary<string, int> styleCache, bool useTessellation)
+    private int WriteElementShape(StepWriter w, IfcElement element, int bodySubContextId, Dictionary<SurfaceStyleKey, int> styleCache, bool useTessellation)
     {
         int? styleId = null;
-        if (element.Material is not null)
+        var appearance = element.GetEffectiveMaterial();
+        if (appearance is not null)
         {
-            styleId = GetOrCreateSurfaceStyle(w, element.Material, styleCache);
+            styleId = GetOrCreateSurfaceStyle(w, appearance, styleCache);
         }
 
         if (element.Solid is not null)
@@ -2603,7 +2551,7 @@ public sealed partial class IfcModel
             int solidGeomId = WriteExtrudedAreaSolid(w, element.Solid);
             if (styleId.HasValue)
             {
-                w.Add("IFCSTYLEDITEM", $"{StepWriter.Ref(solidGeomId)},({StepWriter.Ref(styleId.Value)}),{StepWriter.Str(element.Material?.Name)}");
+                w.Add("IFCSTYLEDITEM", $"{StepWriter.Ref(solidGeomId)},({StepWriter.Ref(styleId.Value)}),{StepWriter.Str(appearance?.Name)}");
             }
             int shapeRepId = w.Add("IFCSHAPEREPRESENTATION",
                 $"{StepWriter.Ref(bodySubContextId)},'Body','SweptSolid',({StepWriter.Ref(solidGeomId)})");
@@ -2616,7 +2564,7 @@ public sealed partial class IfcModel
             int solidGeomId = WriteRevolvedAreaSolid(w, element.RevolvedSolid);
             if (styleId.HasValue)
             {
-                w.Add("IFCSTYLEDITEM", $"{StepWriter.Ref(solidGeomId)},({StepWriter.Ref(styleId.Value)}),{StepWriter.Str(element.Material?.Name)}");
+                w.Add("IFCSTYLEDITEM", $"{StepWriter.Ref(solidGeomId)},({StepWriter.Ref(styleId.Value)}),{StepWriter.Str(appearance?.Name)}");
             }
             int shapeRepId = w.Add("IFCSHAPEREPRESENTATION",
                 $"{StepWriter.Ref(bodySubContextId)},'Body','SweptSolid',({StepWriter.Ref(solidGeomId)})");
@@ -2629,7 +2577,7 @@ public sealed partial class IfcModel
             int solidGeomId = WriteBooleanResult(w, element.BooleanResult, useTessellation);
             if (styleId.HasValue)
             {
-                w.Add("IFCSTYLEDITEM", $"{StepWriter.Ref(solidGeomId)},({StepWriter.Ref(styleId.Value)}),{StepWriter.Str(element.Material?.Name)}");
+                w.Add("IFCSTYLEDITEM", $"{StepWriter.Ref(solidGeomId)},({StepWriter.Ref(styleId.Value)}),{StepWriter.Str(appearance?.Name)}");
             }
             string repType = element.BooleanResult.IsClippingResult ? "Clipping" : "CSG";
             int shapeRepId = w.Add("IFCSHAPEREPRESENTATION",
@@ -2656,7 +2604,7 @@ public sealed partial class IfcModel
 
             if (styleId.HasValue)
             {
-                w.Add("IFCSTYLEDITEM", $"{StepWriter.Ref(geomId)},({StepWriter.Ref(styleId.Value)}),{StepWriter.Str(element.Material?.Name)}");
+                w.Add("IFCSTYLEDITEM", $"{StepWriter.Ref(geomId)},({StepWriter.Ref(styleId.Value)}),{StepWriter.Str(appearance?.Name)}");
             }
 
             int shapeRepId = w.Add("IFCSHAPEREPRESENTATION",
@@ -2919,13 +2867,10 @@ public sealed partial class IfcModel
             var itemEnt = ctx.Step.Find(itemId);
             if (itemEnt is null) continue;
 
-            if (material is null && ctx.GeomToMaterialMap.TryGetValue(itemId, out var mat))
-            {
-                material = mat;
-            }
-
-            var mesh = ParseRepresentationItem(ctx, itemEnt, meshName, ref material, out var itemParametric);
+            var itemMaterial = ctx.GeomToMaterialMap.GetValueOrDefault(itemId);
+            var mesh = ParseRepresentationItem(ctx, itemEnt, meshName, ref itemMaterial, out var itemParametric);
             if (mesh is null) continue;
+            material ??= itemMaterial;
             ctx.ChargeVertices(mesh.Vertices.Count);
             if (parts.Count == 0) parametric = itemParametric;
             parts.Add(mesh);
@@ -2974,6 +2919,8 @@ public sealed partial class IfcModel
         {
             var boolRes = ParseBooleanResult(step, itemEnt, ctx.RadiansPerAngleUnit);
             if (boolRes is null) return null;
+            if (itemEnt.GetRef(1) is int firstOperand)
+                material ??= ctx.GeomToMaterialMap.GetValueOrDefault(firstOperand);
             parametric = new ParametricBody(null, null, boolRes);
             return boolRes.ToMesh(meshName);
         }
@@ -3802,9 +3749,11 @@ public sealed partial class IfcModel
         return w.Add("IFCFACETEDBREP", StepWriter.Ref(shellId));
     }
 
-    private static int GetOrCreateSurfaceStyle(StepWriter w, IfcMaterial mat, Dictionary<string, int> cache)
+    private readonly record struct SurfaceStyleKey(string Name, double R, double G, double B, double Alpha);
+
+    private int GetOrCreateSurfaceStyle(StepWriter w, IfcMaterial mat, Dictionary<SurfaceStyleKey, int> cache)
     {
-        string key = $"{mat.Name}_{mat.R:F2}_{mat.G:F2}_{mat.B:F2}";
+        var key = new SurfaceStyleKey(mat.Name, mat.R, mat.G, mat.B, mat.Alpha);
         if (cache.TryGetValue(key, out int existingId))
         {
             return existingId;
@@ -3812,10 +3761,15 @@ public sealed partial class IfcModel
 
         int colorId = w.Add("IFCCOLOURRGB",
             $"$,{StepWriter.Real(mat.R)},{StepWriter.Real(mat.G)},{StepWriter.Real(mat.B)}");
-        int shadingId = w.Add("IFCSURFACESTYLESHADING", StepWriter.Ref(colorId));
+        string colour = StepWriter.Ref(colorId);
+        int shadingId = mat.Alpha == 1.0
+            ? w.Add("IFCSURFACESTYLESHADING", Schema == IfcSchema.Ifc2x3 ? colour : $"{colour},$")
+            : w.Add("IFCSURFACESTYLERENDERING", $"{colour},{StepWriter.Real(1.0 - mat.Alpha)},$,$,$,$,$,$,.NOTDEFINED.");
         int styleId = w.Add("IFCSURFACESTYLE",
             $"{StepWriter.Str(mat.Name)},.BOTH.,({StepWriter.Ref(shadingId)})");
 
+        if (Schema == IfcSchema.Ifc2x3)
+            styleId = w.Add("IFCPRESENTATIONSTYLEASSIGNMENT", $"({StepWriter.Ref(styleId)})");
         cache[key] = styleId;
         return styleId;
     }

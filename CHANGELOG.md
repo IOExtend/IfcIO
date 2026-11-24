@@ -5,6 +5,8 @@ All notable changes to the `IfcIO` library are documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- IFC import reads wrapped and direct surface colours, rendering transparency and material definition styles.
+  Explicit geometry styles take precedence over associated material colours.
 - IFC import recognizes IFC4.3 separately and reports unknown, missing and multiple schema identifiers. IFC4.3
   is read as a subset and is not silently rewritten as IFC4.
 - Element factories allocate IDs across the model rather than per storey; the writer avoids generated GlobalId

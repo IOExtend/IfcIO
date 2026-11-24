@@ -301,7 +301,8 @@ public static class IfcPatch
             GlobalId = source.GlobalId ?? Guid.NewGuid().ToString("N")[..22],
             Tag = source.Tag,
             TypeProduct = source.TypeProduct,
-            Material = source.Material,
+            Material = source.AssignedMaterial,
+            SurfaceMaterial = source.SurfaceMaterial,
             Mesh = source.Mesh is not null ? IfcMesh.Create(
                 newId,
                 source.Mesh.Name,

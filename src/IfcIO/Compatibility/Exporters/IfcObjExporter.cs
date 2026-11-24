@@ -76,13 +76,13 @@ public static class IfcObjExporter
                 objWriter.WriteLine($"g {safeName}_{elem.Id}");
                 objWriter.WriteLine($"o {safeName}_{elem.Id}");
 
-                if (elem.Material is not null)
+                if (elem.GetEffectiveMaterial() is { } material)
                 {
-                    if (writtenMaterials.Add(elem.Material.Name))
+                    if (writtenMaterials.Add(material.Name))
                     {
-                        WriteMaterial(mtlWriter, elem.Material, inv);
+                        WriteMaterial(mtlWriter, material, inv);
                     }
-                    objWriter.WriteLine($"usemtl {SanitizeName(elem.Material.Name)}");
+                    objWriter.WriteLine($"usemtl {SanitizeName(material.Name)}");
                 }
 
                 var vertices = mesh.Vertices;

@@ -5,6 +5,8 @@ All notable changes to the `IfcIO` library are documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- Faceted face import triangulates concave polygons and holes, keeps disjoint bounds as separate regions,
+  and omits invalid contours rather than substituting zero coordinates.
 - IFC import reads wrapped and direct surface colours, rendering transparency and material definition styles.
   Explicit geometry styles take precedence over associated material colours.
 - IFC import recognizes IFC4.3 separately and reports unknown, missing and multiple schema identifiers. IFC4.3

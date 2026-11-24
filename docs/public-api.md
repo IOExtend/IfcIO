@@ -46,6 +46,9 @@ among generated product GlobalIds and does not rewrite explicit GlobalIds.
 | `IfcProfileDef` | Base type for rectangular, circular, arbitrary closed polygon, I-, L-, and U-shaped profiles. |
 | `IfcExtrudedAreaSolid` | Extrudes a profile and exposes a triangulated mesh through `ToMesh`. |
 
+For faceted faces, the reader triangulates planar concave bounds and holes without adding vertices. Disjoint
+bounds remain separate regions. Invalid contours or faces that exceed the triangulation work limit are omitted.
+
 ## Import & Export
 
 | Type | Description |

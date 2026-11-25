@@ -19,17 +19,19 @@ internal static class IfcFaceTriangulator
     }
 
     private const double Roundoff = 1.7763568394002505e-15; // eight ulps near one
-    private const int MaxFaceVertices = 32_768;
+    internal const int MaxFaceVertices = 32_768;
     private sealed class WorkLimitException : Exception;
 
-    internal static List<int>? Triangulate(IReadOnlyList<IfcVector3> vertices, IReadOnlyList<Bound> bounds)
+    internal static List<int>? Triangulate(
+        IReadOnlyList<IfcVector3> vertices, IReadOnlyList<Bound> bounds, bool strictPolygon = false)
     {
         if (bounds.Count == 0 || vertices.Count > MaxFaceVertices) return null;
-        try { return TriangulateWithin(vertices, bounds); }
+        try { return TriangulateWithin(vertices, bounds, strictPolygon); }
         catch (WorkLimitException) { return null; }
     }
 
-    private static List<int>? TriangulateWithin(IReadOnlyList<IfcVector3> vertices, IReadOnlyList<Bound> bounds)
+    private static List<int>? TriangulateWithin(
+        IReadOnlyList<IfcVector3> vertices, IReadOnlyList<Bound> bounds, bool strictPolygon)
     {
         int workLeft = 20_000_000;
         void Spend()
@@ -82,6 +84,16 @@ internal static class IfcFaceTriangulator
             scale = Math.Max(scale, Math.Max(Math.Abs(point.X), Math.Abs(point.Y)));
         }
         if (!double.IsFinite(scale) || scale <= 0) return null;
+        if (strictPolygon)
+        {
+            var scaledNormal = new IfcVector3(normal.X / normalSize, normal.Y / normalSize, normal.Z / normalSize);
+            // Measure distance relative to the face size, not the distance from the model origin.
+            foreach (var vertex in vertices)
+            {
+                double distance = IfcVector3.Dot(vertex - anchor, scaledNormal);
+                if (!double.IsFinite(distance) || Math.Abs(distance) > 1e-9 * scale) return null;
+            }
+        }
 
         var rings = new List<Ring>(bounds.Count);
         foreach (var bound in bounds)
@@ -120,6 +132,8 @@ internal static class IfcFaceTriangulator
                 bestArea = area;
             }
         }
+
+        if (strictPolygon && (rings[0].Parent != -1 || rings.Skip(1).Any(ring => ring.Parent != 0))) return null;
 
         var output = new List<int>();
         for (int i = 0; i < rings.Count; i++)

@@ -2806,6 +2806,7 @@ public sealed partial class IfcModel
         public Dictionary<int, (IfcMesh? Mesh, IfcMaterial? Material)> MappedRepresentations { get; } = [];
         public HashSet<int> MapsInProgress { get; } = [];
         public HashSet<string> BooleanWarnings { get; } = [];
+        public Dictionary<int, IfcVector3?[]> TessellatedPointLists { get; } = [];
 
         /// <summary>
         /// Cap on vertices materialised while reading nested mapped items and Boolean bodies.
@@ -2960,7 +2961,7 @@ public sealed partial class IfcModel
         var step = ctx.Step;
 
         // A/B. Meshes (Brep / TriangulatedFaceSet / surface models)
-        var mesh = ParseMeshEntity(step, itemEnt, meshName);
+        var mesh = ParseMeshEntity(ctx, itemEnt, meshName);
         if (mesh is not null) return mesh;
 
         // C/D. IFCEXTRUDEDAREASOLID / IFCREVOLVEDAREASOLID
@@ -3324,8 +3325,9 @@ public sealed partial class IfcModel
         return null;
     }
 
-    private static IfcMesh? ParseMeshEntity(StepFile step, StepEntity itemEnt, string meshName = "Mesh")
+    private static IfcMesh? ParseMeshEntity(GeometryReadContext ctx, StepEntity itemEnt, string meshName = "Mesh")
     {
+        var step = ctx.Step;
         // IFCFACETEDBREP (one closed shell), IFCFACEBASEDSURFACEMODEL (connected face sets), IFCSHELLBASEDSURFACEMODEL (shells)
         bool isBrep = itemEnt.Type.Equals("IFCFACETEDBREP", StringComparison.OrdinalIgnoreCase);
         if (isBrep ||
@@ -3337,80 +3339,18 @@ public sealed partial class IfcModel
             return ParseFacetedFaces(step, itemEnt, faceIds, meshName);
         }
 
-        // IFCTRIANGULATEDFACESET (IFC4)
         if (itemEnt.Type.Equals("IFCTRIANGULATEDFACESET", StringComparison.OrdinalIgnoreCase))
-        {
-            int? ptListId = itemEnt.GetRef(0);
-            var ptListEnt = step.Find(ptListId);
-            if (ptListEnt is null) return null;
-
-            var vertices = new List<IfcVector3>();
-            foreach (var tuple in ParseStepList(ptListEnt.GetRaw(0)))
-            {
-                var parts = ParseStepList(tuple);
-                if (parts.Count != 3 || !TryCoordinate(parts[0], out double x)
-                    || !TryCoordinate(parts[1], out double y) || !TryCoordinate(parts[2], out double z)) return null;
-                vertices.Add(new IfcVector3(x, y, z));
-            }
-
-            var pointNumbers = ParseStepList(itemEnt.GetRaw(4));
-            // Before IFC4 Addendum 2 this attribute was NormalIndex (a list of triplets).
-            if (pointNumbers.Count > 0 && pointNumbers[0].StartsWith('('))
-                pointNumbers.Clear();
-            var indices = new List<int>();
-            foreach (var triTuple in ParseStepList(itemEnt.GetRaw(3)))
-            {
-                var parts = ParseStepList(triTuple);
-                if (parts.Count == 3 && TryVertexIndex(parts[0], out int i0)
-                    && TryVertexIndex(parts[1], out int i1) && TryVertexIndex(parts[2], out int i2))
-                {
-                    indices.Add(i0);
-                    indices.Add(i1);
-                    indices.Add(i2);
-                }
-            }
-
-            if (vertices.Count >= 3 && indices.Count >= 3)
-            {
-                var remap = new int[vertices.Count];
-                foreach (int index in indices) remap[index] = 1;
-                int count = 0;
-                for (int i = 0; i < vertices.Count; i++)
-                {
-                    if (remap[i] == 0) continue;
-                    remap[i] = count;
-                    vertices[count++] = vertices[i];
-                }
-                if (count != vertices.Count)
-                {
-                    vertices.RemoveRange(count, vertices.Count - count);
-                    for (int i = 0; i < indices.Count; i++) indices[i] = remap[indices[i]];
-                }
-                return IfcMesh.Create(itemEnt.Id, meshName, vertices, indices);
-            }
-
-            static bool TryCoordinate(string text, out double value) =>
-                double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value) && double.IsFinite(value);
-
-            bool TryVertexIndex(string text, out int index)
-            {
-                index = 0;
-                if (!int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out int number) || number <= 0)
-                    return false;
-                if (pointNumbers.Count > 0 && (number > pointNumbers.Count
-                    || !int.TryParse(pointNumbers[number - 1], NumberStyles.Integer, CultureInfo.InvariantCulture, out number)))
-                    return false;
-                if (number <= 0 || number > vertices.Count) return false;
-                index = number - 1;
-                return true;
-            }
-        }
+            return ParseTriangulatedFaceSet(ctx, itemEnt, meshName);
+        if (itemEnt.Type.Equals("IFCPOLYGONALFACESET", StringComparison.OrdinalIgnoreCase))
+            return ParsePolygonalFaceSet(ctx, itemEnt, meshName);
 
         return null;
     }
 
     private static List<string> ParseStepList(string? raw) =>
-        raw is { Length: >= 2 } && raw[0] == '(' && raw[^1] == ')' ? StepEntity.ParseArguments(raw[1..^1]) : [];
+        raw is { Length: >= 2 } && raw[0] == '(' && raw[^1] == ')'
+            && !raw.AsSpan(1, raw.Length - 2).TrimEnd().EndsWith(",", StringComparison.Ordinal)
+            ? StepEntity.ParseArguments(raw[1..^1]) : [];
 
     private const int MaxBooleanDepth = 64;
 
@@ -3454,7 +3394,7 @@ public sealed partial class IfcModel
                 boolResult.FirstSolid = extruded;
                 boolResult.FirstRevolved = revolved;
                 if (extruded is null && revolved is null)
-                    boolResult.FirstMesh = sweptMesh ?? ParseMeshEntity(step, firstEnt);
+                    boolResult.FirstMesh = sweptMesh ?? ParseMeshEntity(ctx, firstEnt);
                 ctx.ChargeVertices((sweptMesh ?? boolResult.FirstMesh)?.Vertices.Count ?? 0);
             }
         }
@@ -3476,7 +3416,7 @@ public sealed partial class IfcModel
                 boolResult.SecondSolid = extruded;
                 boolResult.SecondRevolved = revolved;
                 if (extruded is null)
-                    boolResult.SecondMesh = sweptMesh ?? ParseMeshEntity(step, secondEnt);
+                    boolResult.SecondMesh = sweptMesh ?? ParseMeshEntity(ctx, secondEnt);
                 ctx.ChargeVertices((sweptMesh ?? boolResult.SecondMesh)?.Vertices.Count ?? 0);
             }
         }

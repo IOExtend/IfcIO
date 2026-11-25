@@ -58,6 +58,13 @@ IFC4 and IFC4.3 `IfcPolygonalFaceSet` import also triangulates indexed polygons 
 honours optional `PnIndex` remapping, and omits malformed faces. It keeps the resulting triangle mesh,
 not the original indexed polygon groups.
 
+`IfcSweptDiskSolid` import supports open 3D `IfcPolyline` and linear `IfcIndexedPolyCurve` paths, and meshes
+the circular section with 16 sides. It honours parameter trims and the optional inner radius, and uses
+mitered joints and end caps. `IfcSweptDiskSolidPolygonal` is read without fillets only. Closed paths,
+arcs and other curved directrices are not read by this path. Input curves must not self-intersect;
+the mesher checks adjacent miters, not intersections between distant parts of the sweep.
+A readable `Body-FallBack` takes precedence when the primary body has unreadable items.
+
 Imported meshes use world coordinates. If a swept body cannot be represented by one equivalent parametric
 solid, the reader keeps its placed mesh instead; IFC export writes that mesh rather than a partial or
 misplaced solid. Boolean operands also use placed meshes where necessary. Applying arbitrary solid-to-solid

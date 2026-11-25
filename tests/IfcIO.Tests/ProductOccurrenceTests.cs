@@ -111,10 +111,11 @@ public class ProductOccurrenceTests
     {
         string ifc = BuildIfc("IFC4", """
             #20=IFCACTUATOR('1YvctVUKr0kugbFTf53O9L',$,'Actuator',$,$,#6,#14,$,$);
-            #21=IFCSWEPTDISKSOLID(#22,1.,$,$,$);
-            #22=IFCPOLYLINE((#4,#23));
+            #21=IFCSWEPTDISKSOLIDPOLYGONAL(#22,1.,$,$,$,4.);
+            #22=IFCPOLYLINE((#4,#23,#25));
             #23=IFCCARTESIANPOINT((0.,0.,100.));
             #24=IFCSHAPEREPRESENTATION(#7,'Clearance','SweptSolid',(#12));
+            #25=IFCCARTESIANPOINT((20.,0.,100.));
             """)
             .Replace("'Body','SweptSolid',(#12)", "'Body','AdvancedSweptSolid',(#21)", StringComparison.Ordinal)
             .Replace("$,$,(#13)", "$,$,(#13,#24)", StringComparison.Ordinal);

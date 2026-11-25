@@ -105,6 +105,9 @@ public sealed class StepEntity
 
     private static bool Omitted(ReadOnlySpan<char> arg) => arg.Length == 1 && arg[0] is '$' or '*';
 
+    internal bool IsNullParameter(int index) =>
+        TryGetArgument(index, out var arg) && arg.Length == 1 && arg[0] == '$';
+
     public static List<string> ParseArguments(string args)
     {
         var result = new List<string>();

@@ -1772,6 +1772,7 @@ public sealed partial class IfcModel
             geomToMaterialMap,
             IfcTransform.Scale(geometryScale).Multiply(ParseWorldCoordinateSystem(step)),
             radiansPerAngleUnit,
+            schema,
             omitUnsupportedPlacements: schema == IfcSchema.Ifc4x3,
             keepParametric: geometryScale == 1.0);
         var defaultStorey = model.Storeys[0];
@@ -2790,7 +2791,7 @@ public sealed partial class IfcModel
     /// <summary>State shared while reading product geometry: caches for placements and mapped representations.</summary>
     private sealed class GeometryReadContext(
         StepFile step, Dictionary<int, IfcMaterial> geomToMaterialMap, IfcTransform root, double radiansPerAngleUnit,
-        bool omitUnsupportedPlacements, bool keepParametric)
+        IfcSchema schema, bool omitUnsupportedPlacements, bool keepParametric)
     {
         public StepFile Step { get; } = step;
         public Dictionary<int, IfcMaterial> GeomToMaterialMap { get; } = geomToMaterialMap;
@@ -2798,12 +2799,13 @@ public sealed partial class IfcModel
         /// <summary>Unit scale applied after the world coordinate system of the model context.</summary>
         public IfcTransform Root { get; } = root;
         public double RadiansPerAngleUnit { get; } = radiansPerAngleUnit;
+        public IfcSchema Schema { get; } = schema;
         public bool OmitUnsupportedPlacements { get; } = omitUnsupportedPlacements;
 
         /// <summary>False when geometry is rescaled to metres: parametric solids stay in file units and would disagree with LengthUnit.</summary>
         public bool KeepParametric { get; } = keepParametric;
         public Dictionary<int, IfcTransform> Placements { get; } = [];
-        public Dictionary<int, (IfcMesh? Mesh, IfcMaterial? Material)> MappedRepresentations { get; } = [];
+        public Dictionary<int, (IfcMesh? Mesh, IfcMaterial? Material, bool HasSkippedItems)> MappedRepresentations { get; } = [];
         public HashSet<int> MapsInProgress { get; } = [];
         public HashSet<string> BooleanWarnings { get; } = [];
         public Dictionary<int, IfcVector3?[]> TessellatedPointLists { get; } = [];
@@ -2824,8 +2826,13 @@ public sealed partial class IfcModel
 
         public void ChargeVertices(int count)
         {
+            CheckVertexBudget(count);
             _materialisedVertices += count;
-            if (_materialisedVertices > VertexBudget)
+        }
+
+        public void CheckVertexBudget(long count)
+        {
+            if (count > int.MaxValue || _materialisedVertices + count > VertexBudget)
             {
                 throw new InvalidDataException(
                     $"IFC geometry expands to more than {VertexBudget} vertices (limit for {Step.EntityCount} entities); check for nested mapped items or Boolean results.");
@@ -2870,38 +2877,51 @@ public sealed partial class IfcModel
             .Where(r => r.Type.Equals("IFCSHAPEREPRESENTATION", StringComparison.OrdinalIgnoreCase))
             .ToList();
 
-        // Legacy products can fall back to another representation; newly discovered products require Body.
+        // A complete Body-FallBack can replace an incomplete Body, but not vice versa.
+        // Never substitute e.g. Clearance for Body on newly discovered products.
         static bool IsBody(StepEntity rep) => string.Equals(rep.GetString(1), "Body", StringComparison.OrdinalIgnoreCase);
-        var bodies = reps.Where(IsBody);
-        foreach (var rep in bodyOnly ? bodies : bodies.Concat(reps.Where(r => !IsBody(r))))
+        static bool IsFallback(StepEntity rep) => string.Equals(rep.GetString(1), "Body-FallBack", StringComparison.OrdinalIgnoreCase);
+        var fallbacks = reps.Where(IsFallback);
+        bool hasFallback = reps.Any(IsFallback);
+        var candidates = reps.Where(IsBody).Concat(fallbacks);
+        if (!bodyOnly) candidates = candidates.Concat(reps.Where(rep => !IsBody(rep) && !IsFallback(rep)));
+        (IfcMesh Mesh, IfcMaterial? Material, ParametricBody? Parametric, bool HasBoolean)? selected = null, incompleteBody = null;
+        foreach (var rep in candidates)
         {
+            if (incompleteBody is not null && !IsBody(rep) && !IsFallback(rep)) break;
             IfcMaterial? repMaterial = null;
-            var mesh = ParseRepresentationItems(ctx, rep, meshName, ref repMaterial, out var parametric, out bool hasBoolean);
+            var mesh = ParseRepresentationItems(ctx, rep, meshName, ref repMaterial, out var parametric, out bool hasBoolean, out bool hasSkippedItems);
             if (mesh is null) continue;
 
-            material = repMaterial;
-            booleanResult = parametric?.Boolean;
-            unwritableBooleanBody = hasBoolean && booleanResult is null;
-            if (parametric is { } body && ctx.KeepParametric && placement.IsTranslationOnly)
+            if (hasSkippedItems && hasFallback && (IsBody(rep) || IsFallback(rep)))
             {
-                solid = body.Solid;
-                if (solid is not null) solid.Position += placement.Origin;
-                revolvedSolid = body.Revolved;
-                if (revolvedSolid is not null)
-                {
-                    revolvedSolid.Position += placement.Origin;
-                    revolvedSolid.Axis.Location += placement.Origin;
-                }
+                incompleteBody ??= (mesh, repMaterial, parametric, hasBoolean);
+                continue;
             }
-
-            if (booleanResult is not null && !placement.IsIdentity)
-                PlaceBooleanOperands(booleanResult, placement);
-
-            var world = placement.ApplyTo(mesh);
-            return IfcMesh.Create(world.Id, meshName, world.Vertices, world.Indices);
+            selected = (mesh, repMaterial, parametric, hasBoolean);
+            break;
         }
 
-        return null;
+        if ((selected ?? incompleteBody) is not { } chosen) return null;
+        material = chosen.Material;
+        booleanResult = chosen.Parametric?.Boolean;
+        unwritableBooleanBody = chosen.HasBoolean && booleanResult is null;
+        if (chosen.Parametric is { } body && ctx.KeepParametric && placement.IsTranslationOnly)
+        {
+            solid = body.Solid;
+            if (solid is not null) solid.Position += placement.Origin;
+            revolvedSolid = body.Revolved;
+            if (revolvedSolid is not null)
+            {
+                revolvedSolid.Position += placement.Origin;
+                revolvedSolid.Axis.Location += placement.Origin;
+            }
+        }
+
+        if (booleanResult is not null && !placement.IsIdentity)
+            PlaceBooleanOperands(booleanResult, placement);
+        var world = placement.ApplyTo(chosen.Mesh);
+        return IfcMesh.Create(world.Id, meshName, world.Vertices, world.Indices);
     }
 
     /// <summary>Merges all readable items of a shape representation into one mesh in the representation's coordinates.</summary>
@@ -2911,10 +2931,12 @@ public sealed partial class IfcModel
         string meshName,
         ref IfcMaterial? material,
         out ParametricBody? parametric,
-        out bool hasBoolean)
+        out bool hasBoolean,
+        out bool hasSkippedItems)
     {
         parametric = null;
         hasBoolean = false;
+        hasSkippedItems = false;
         if (repEnt is null) return null;
 
         var itemIds = repEnt.GetRefList(3);
@@ -2922,11 +2944,20 @@ public sealed partial class IfcModel
         foreach (int itemId in itemIds)
         {
             var itemEnt = ctx.Step.Find(itemId);
-            if (itemEnt is null) continue;
+            if (itemEnt is null)
+            {
+                hasSkippedItems = true;
+                continue;
+            }
 
             var itemMaterial = ctx.GeomToMaterialMap.GetValueOrDefault(itemId);
-            var mesh = ParseRepresentationItem(ctx, itemEnt, meshName, ref itemMaterial, out var itemParametric);
-            if (mesh is null) continue;
+            var mesh = ParseRepresentationItem(ctx, itemEnt, meshName, ref itemMaterial, out var itemParametric, out bool skippedNestedItems);
+            if (mesh is null)
+            {
+                hasSkippedItems = true;
+                continue;
+            }
+            hasSkippedItems |= skippedNestedItems;
             material ??= itemMaterial;
             // The Boolean reader already charges leaf meshes and triangles emitted by each clip.
             if (itemParametric?.Boolean is null) ctx.ChargeVertices(mesh.Vertices.Count);
@@ -2955,9 +2986,11 @@ public sealed partial class IfcModel
         StepEntity itemEnt,
         string meshName,
         ref IfcMaterial? material,
-        out ParametricBody? parametric)
+        out ParametricBody? parametric,
+        out bool hasSkippedItems)
     {
         parametric = null;
+        hasSkippedItems = false;
         var step = ctx.Step;
 
         // A/B. Meshes (Brep / TriangulatedFaceSet / surface models)
@@ -2989,7 +3022,8 @@ public sealed partial class IfcModel
             int? mapId = itemEnt.GetRef(0);
             if (!mapId.HasValue) return null;
 
-            var (mapMesh, mapMaterial) = ParseMappedRepresentation(ctx, mapId.Value, meshName);
+            var (mapMesh, mapMaterial, skippedMappedItems) = ParseMappedRepresentation(ctx, mapId.Value, meshName);
+            hasSkippedItems = skippedMappedItems;
             material ??= mapMaterial;
             if (mapMesh is null) return null;
             return ParseCartesianTransformationOperator(step, itemEnt.GetRef(1)).ApplyTo(mapMesh);
@@ -3061,14 +3095,15 @@ public sealed partial class IfcModel
     }
 
     /// <summary>Reads an IfcRepresentationMap once, in the coordinates of the mapping (MappingOrigin applied).</summary>
-    private static (IfcMesh? Mesh, IfcMaterial? Material) ParseMappedRepresentation(GeometryReadContext ctx, int mapId, string meshName)
+    private static (IfcMesh? Mesh, IfcMaterial? Material, bool HasSkippedItems) ParseMappedRepresentation(
+        GeometryReadContext ctx, int mapId, string meshName)
     {
         if (ctx.MappedRepresentations.TryGetValue(mapId, out var cached)) return cached;
 
         var mapEnt = ctx.Step.Find(mapId);
         if (mapEnt is null || !mapEnt.Type.Equals("IFCREPRESENTATIONMAP", StringComparison.OrdinalIgnoreCase))
         {
-            return (null, null);
+            return (null, null, true);
         }
 
         if (ctx.MapsInProgress.Count >= MaxMappingDepth)
@@ -3082,8 +3117,8 @@ public sealed partial class IfcModel
         }
 
         IfcMaterial? material = null;
-        var mesh = ParseRepresentationItems(ctx, ctx.Step.Find(mapEnt.GetRef(1)), meshName, ref material, out _, out _);
-        var result = (mesh is null ? null : ParseAxis2Placement(ctx.Step, mapEnt.GetRef(0)).ApplyTo(mesh), material);
+        var mesh = ParseRepresentationItems(ctx, ctx.Step.Find(mapEnt.GetRef(1)), meshName, ref material, out _, out _, out bool skippedItems);
+        var result = (mesh is null ? null : ParseAxis2Placement(ctx.Step, mapEnt.GetRef(0)).ApplyTo(mesh), material, skippedItems);
 
         ctx.MapsInProgress.Remove(mapId);
         ctx.MappedRepresentations[mapId] = result;
@@ -3343,6 +3378,9 @@ public sealed partial class IfcModel
             return ParseTriangulatedFaceSet(ctx, itemEnt, meshName);
         if (itemEnt.Type.Equals("IFCPOLYGONALFACESET", StringComparison.OrdinalIgnoreCase))
             return ParsePolygonalFaceSet(ctx, itemEnt, meshName);
+        if (itemEnt.Type.Equals("IFCSWEPTDISKSOLID", StringComparison.OrdinalIgnoreCase)
+            || itemEnt.Type.Equals("IFCSWEPTDISKSOLIDPOLYGONAL", StringComparison.OrdinalIgnoreCase))
+            return ParseSweptDisk(ctx, itemEnt, meshName);
 
         return null;
     }

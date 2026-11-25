@@ -70,6 +70,16 @@ public static class IfcValidator
             });
         }
 
+        foreach (var item in model.RepresentationImportWarnings)
+        {
+            issues.Add(new IfcValidationIssue
+            {
+                RuleId = "IFC_GEOMETRY_IMPORT",
+                Severity = IfcIssueSeverity.Warning,
+                Message = item.ToString(),
+            });
+        }
+
         // 2. GlobalId uniqueness and format
         var seenGuids = new Dictionary<string, string>(StringComparer.Ordinal);
 

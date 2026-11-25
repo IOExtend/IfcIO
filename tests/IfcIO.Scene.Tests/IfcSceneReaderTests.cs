@@ -442,6 +442,20 @@ public class IfcSceneReaderTests
         Assert.Empty(result.Diagnostics);
     }
 
+    [Fact]
+    public void Read_PartialBody_ReportsSkippedItemWithoutDroppingGeometry()
+    {
+        string ifc = PlacedIfc(Millimetre, "#119=IFCBOUNDINGBOX(#22,100.,100.,100.);")
+            .Replace("'Brep',(#106)", "'Brep',(#106,#119)", StringComparison.Ordinal);
+        var result = Valid(Read(OpenText(ifc)));
+
+        Assert.Equal(3, result.ElementsWithGeometry);
+        var warning = Assert.Single(result.Diagnostics);
+        Assert.Equal(SceneSeverity.Warning, warning.Severity);
+        Assert.Equal("skipped-representation-item", warning.Code);
+        Assert.Contains("Representation #105: skipped item #119 (IFCBOUNDINGBOX)", warning.Message, StringComparison.Ordinal);
+    }
+
     [IfcFileFact]
     public void Read_ConfiguredIfcFile_ConvertsEveryElement()
     {

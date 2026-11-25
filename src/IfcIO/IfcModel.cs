@@ -27,6 +27,9 @@ public sealed partial class IfcModel
 
     /// <summary>Boolean import warnings for skipped operands or operations not evaluated in the mesh.</summary>
     public IReadOnlyList<string> BooleanImportWarnings { get; internal set; } = [];
+
+    /// <summary>Missing representations and unreadable items encountered during import.</summary>
+    public IReadOnlyList<IfcRepresentationImportWarning> RepresentationImportWarnings { get; internal set; } = [];
     public IfcLengthUnit LengthUnit { get; set; } = IfcLengthUnit.Millimetre;
     public IfcPlaneAngleUnit AngleUnit { get; set; } = IfcPlaneAngleUnit.Degree;
 
@@ -2515,6 +2518,10 @@ public sealed partial class IfcModel
 
         model._reservedElementIds.UnionWith(allElementsMap.Keys);
         model.BooleanImportWarnings = geometry.BooleanWarnings.Order(StringComparer.Ordinal).ToArray();
+        if (geometry.RepresentationWarnings.Count > 0)
+            model.RepresentationImportWarnings = Array.AsReadOnly(geometry.RepresentationWarnings
+                .OrderBy(item => item.RepresentationId).ThenBy(item => item.ItemId)
+                .Select(item => item with { SourceName = modelName ?? step.FileName }).ToArray());
         return model;
     }
 
@@ -2808,6 +2815,7 @@ public sealed partial class IfcModel
         public Dictionary<int, (IfcMesh? Mesh, IfcMaterial? Material, bool HasSkippedItems)> MappedRepresentations { get; } = [];
         public HashSet<int> MapsInProgress { get; } = [];
         public HashSet<string> BooleanWarnings { get; } = [];
+        public HashSet<IfcRepresentationImportWarning> RepresentationWarnings { get; } = [];
         public Dictionary<int, IfcVector3?[]> TessellatedPointLists { get; } = [];
 
         /// <summary>
@@ -2871,11 +2879,14 @@ public sealed partial class IfcModel
         var shapeDef = ctx.Step.Find(shapeDefId);
         if (shapeDef is null) return null;
 
-        var reps = shapeDef.GetRefList(2)
-            .Select(id => ctx.Step.Find(id))
-            .OfType<StepEntity>()
-            .Where(r => r.Type.Equals("IFCSHAPEREPRESENTATION", StringComparison.OrdinalIgnoreCase))
-            .ToList();
+        var reps = new List<StepEntity>();
+        foreach (int id in shapeDef.GetRefList(2))
+        {
+            var representation = ctx.Step.Find(id);
+            if (representation is null) ctx.RepresentationWarnings.Add(new(id, null, null));
+            else if (representation.Type.Equals("IFCSHAPEREPRESENTATION", StringComparison.OrdinalIgnoreCase))
+                reps.Add(representation);
+        }
 
         // A complete Body-FallBack can replace an incomplete Body, but not vice versa.
         // Never substitute e.g. Clearance for Body on newly discovered products.
@@ -2947,6 +2958,7 @@ public sealed partial class IfcModel
             if (itemEnt is null)
             {
                 hasSkippedItems = true;
+                ctx.RepresentationWarnings.Add(new(repEnt.Id, itemId, null));
                 continue;
             }
 
@@ -2955,7 +2967,14 @@ public sealed partial class IfcModel
             if (mesh is null)
             {
                 hasSkippedItems = true;
+                ctx.RepresentationWarnings.Add(new(repEnt.Id, itemId, itemEnt.Type));
                 continue;
+            }
+            if (mesh.TriangleCount == 0 && (itemParametric?.Boolean is not { } boolean || !HasBooleanBase(boolean)))
+            {
+                // Preserve incomplete Boolean metadata, but report that it contributed no geometry.
+                ctx.RepresentationWarnings.Add(new(repEnt.Id, itemId, itemEnt.Type));
+                hasSkippedItems = true;
             }
             hasSkippedItems |= skippedNestedItems;
             material ??= itemMaterial;
@@ -2978,6 +2997,12 @@ public sealed partial class IfcModel
             foreach (int index in part.Indices) indices.Add(index + offset);
         }
         return IfcMesh.Create(parts[0].Id, meshName, vertices, indices);
+
+        static bool HasBooleanBase(IfcBooleanResult result)
+        {
+            while (result.FirstBoolean is { } child) result = child;
+            return result.FirstMesh is { TriangleCount: > 0 } || result.FirstSolid is not null || result.FirstRevolved is not null;
+        }
     }
 
     /// <summary>Reads one representation item into a mesh in the coordinates of its representation.</summary>

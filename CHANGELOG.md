@@ -5,6 +5,8 @@ All notable changes to the `IfcIO` library are documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- Import reports missing or unreadable shape representation items, including items in partially readable
+  and mapped bodies, through the model, validation, CLI and scene adapter.
 - Import meshes swept disks along open 3D polylines and linear indexed curves, including optional trimming,
   mitered joints and hollow sections.
 - Import reads IFC4 and IFC4.3 `IfcPolygonalFaceSet` geometry, including concave polygons, holes and `PnIndex`

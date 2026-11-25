@@ -34,6 +34,9 @@ public sealed class IfcSceneResult
     /// <see cref="SceneDiagnostic.SourceId"/>: <c>no-geometry</c> (information: IfcIO returned no mesh),
     /// <c>empty-mesh</c> or <c>invalid-mesh</c> (warnings: a mesh without triangles, or with a non-finite coordinate,
     /// an index out of range or an index count not divisible by 3). These elements stay in the scene without geometry.
+    /// Source IFC items that could not be read also produce <c>skipped-representation-item</c> warnings,
+    /// even if their parent representation or an explicit fallback produced a usable mesh.
+    /// Unresolved representation references produce <c>missing-representation</c> warnings.
     /// </summary>
     public IReadOnlyList<SceneDiagnostic> Diagnostics { get; }
 

@@ -394,6 +394,7 @@ Examples:
         Console.WriteLine($"Packaging '{inputPath}' into '{outputPath}'...");
         var sw = Stopwatch.StartNew();
         var model = IfcModel.Open(inputPath);
+        WarnOnPartialImport(model);
         model.SaveZip(outputPath);
         sw.Stop();
 
@@ -427,6 +428,7 @@ Examples:
         Console.WriteLine($"Extracting '{inputPath}' to '{outputPath}'...");
         var sw = Stopwatch.StartNew();
         var model = IfcModel.Open(inputPath);
+        WarnOnPartialImport(model);
         model.Save(outputPath);
         sw.Stop();
 
@@ -662,6 +664,8 @@ Examples:
     {
         foreach (string warning in model.BooleanImportWarnings)
             Console.Error.WriteLine($"Warning: {warning}");
+        foreach (var item in model.RepresentationImportWarnings)
+            Console.Error.WriteLine($"Warning: {item}");
         if (model.Schema != IfcSchema.Ifc4x3) return;
         Console.Error.WriteLine($"Warning: {model.SourceSchemaIdentifier} is read as a subset. Uninterpreted content is omitted.");
         if (model.UnsupportedPlacementCount > 0)
@@ -976,6 +980,7 @@ Examples:
 
         var sw = Stopwatch.StartNew();
         var model = IfcModel.Open(inputPath);
+        WarnOnPartialImport(model);
         var (elems, props) = model.ImportCsv(csvPath, delimiter);
         model.Save(outPath);
         sw.Stop();

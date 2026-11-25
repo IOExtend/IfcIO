@@ -65,6 +65,13 @@ arcs and other curved directrices are not read by this path. Input curves must n
 the mesher checks adjacent miters, not intersections between distant parts of the sweep.
 A readable `Body-FallBack` takes precedence when the primary body has unreadable items.
 
+`IfcModel.RepresentationImportWarnings` identifies missing representations or unreadable items by their original
+STEP IDs and item type when known. It includes failed items in a body that used `Body-FallBack`, but not
+unselected alternatives or individual faces within a usable mesh. Extraction and merge retain the warnings as
+source diagnostics rather than revalidating the selected geometry. `SourceName` is a label, not a unique file ID;
+pass distinct model names when identical filenames need to be distinguished. CLI geometry commands report the
+warnings on standard error, and `Validate()` includes them as `IFC_GEOMETRY_IMPORT`.
+
 Imported meshes use world coordinates. If a swept body cannot be represented by one equivalent parametric
 solid, the reader keeps its placed mesh instead; IFC export writes that mesh rather than a partial or
 misplaced solid. Boolean operands also use placed meshes where necessary. Applying arbitrary solid-to-solid

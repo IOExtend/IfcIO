@@ -54,6 +54,9 @@ among generated product GlobalIds and does not rewrite explicit GlobalIds.
 
 For faceted faces, the reader triangulates planar concave bounds and holes without adding vertices. Disjoint
 bounds remain separate regions. Invalid contours or faces that exceed the triangulation work limit are omitted.
+IFC4 and IFC4.3 `IfcPolygonalFaceSet` import also triangulates indexed polygons and interior holes,
+honours optional `PnIndex` remapping, and omits malformed faces. It keeps the resulting triangle mesh,
+not the original indexed polygon groups.
 
 Imported meshes use world coordinates. If a swept body cannot be represented by one equivalent parametric
 solid, the reader keeps its placed mesh instead; IFC export writes that mesh rather than a partial or

@@ -5,6 +5,8 @@ All notable changes to the `IfcIO` library are documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- Import reads IFC4 and IFC4.3 `IfcPolygonalFaceSet` geometry, including concave polygons, holes and `PnIndex`
+  point reindexing. Invalid faces are omitted without altering the other faces.
 - Import reads additional concrete IFC products with a `Body` representation, including curtain walls, piles,
   ramps, furniture, distribution equipment, and IFC4.3 infrastructure elements.
 - Boolean import preserves nested operands and evaluates chains of plane clips. It reports skipped bounded

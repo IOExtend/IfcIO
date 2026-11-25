@@ -81,6 +81,8 @@ rebases them, for example on `ComputeBounds().Center`, before narrowing them to 
 
 - Mapped items (`IfcMappedItem`) are baked into each element's world mesh, so shared geometry is not shared in the
   scene.
+- `skipped-representation-item` warnings identify unreadable IFC items by source STEP IDs, including when the
+  remaining items or a fallback still produce geometry. `missing-representation` reports unresolved representation references.
 - IfcIO uses `IfcRelContainedInSpatialStructure` and passes known storey assignments to aggregated parts
   (`IfcRelAggregates`). Products with no storey assignment are in the first storey. A file without storeys
   gets IfcIO's default storey `Level 1`, which has no GlobalId. Site, building and project are not tree nodes.

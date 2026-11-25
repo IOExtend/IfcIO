@@ -102,6 +102,9 @@ public static class IfcSceneReader
         });
 
         var diagnostics = new List<SceneDiagnostic>();
+        foreach (var item in model.RepresentationImportWarnings)
+            diagnostics.Add(new SceneDiagnostic(SceneSeverity.Warning, item.ItemId is null ? "missing-representation" : "skipped-representation-item",
+                item.ToString(), null));
         var materials = new Dictionary<IfcMaterial, int>(ReferenceEqualityComparer.Instance);
         var sets = new Dictionary<object, int>(ReferenceEqualityComparer.Instance);
         var converted = new Dictionary<IfcElement, long>(ReferenceEqualityComparer.Instance);
